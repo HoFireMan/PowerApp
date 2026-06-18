@@ -1,6 +1,3 @@
-<<<<<<< HEAD
-沒問題！這裡直接為你輸出完整、排版好的 Markdown 格式原始碼，你可以直接點擊右上角的「複製」按鈕，然後貼上到你的 `README.md` 檔案中：
-
 ```markdown
 # ⚡ 能源管理與自動化中控台 (Energy Management & Automation System)
 
