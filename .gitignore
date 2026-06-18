@@ -1,0 +1,32 @@
+🔒 絕對不能上傳的金鑰檔案
+
+.env
+
+📦 Docker 資料庫實體資料 (如果上傳會很大且包含真實數據)
+
+pgdata/
+
+📂 爬蟲產生的 Excel 報表與日誌
+
+electricity_bill_scraper/output/
+electricity_bill_scraper/歷史爬取資料/
+launcher_error.log
+
+🐍 Python 系統快取檔
+
+pycache/
+*.pyc
+*.pyo
+
+🔨 打包工具產生的暫存檔 (只上傳原始碼，不需要上傳 exe)
+
+build/
+dist/
+*.spec
+
+🚫 使用者指定不允許上傳的敏感檔案/資料夾
+
+electricity_bill_scraper/accounts.csv
+Energy Report Automation/店家ID.xlsx
+electricity_bill_scraper/output/
+electricity_bill_scraper/merge/
