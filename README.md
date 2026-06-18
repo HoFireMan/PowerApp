@@ -1,4 +1,3 @@
-```markdown
 # ⚡ 能源管理與自動化中控台 (Energy Management & Automation System)
 
 這是一個全方位的能源數據自動化收集與管理系統。本專案整合了 **感測器 API 數據爬取** 與 **台電電子帳單網頁自動化爬蟲**，並透過 Docker 容器化的 PostgreSQL 資料庫進行統一儲存，最後提供一個直覺的視覺化 GUI 中控台供使用者一鍵操作。
