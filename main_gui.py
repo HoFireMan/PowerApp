@@ -73,7 +73,7 @@ class PowerApp(ctk.CTk):
         self.cb_start_m.set("05")
         self.cb_start_m.pack(side="left", padx=2)
         self.cb_start_d = ctk.CTkComboBox(frame_start, values=days, width=60)
-        self.cb_start_d.set("20")
+        self.cb_start_d.set("01")
         self.cb_start_d.pack(side="left", padx=2)
         
         # 結束日期下拉選單
