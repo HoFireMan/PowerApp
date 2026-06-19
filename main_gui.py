@@ -29,6 +29,20 @@ class PowerApp(ctk.CTk):
 
         self.title("⚡ 能源管理與自動化中控台 v1.7")
         self.geometry("980x900")  # 稍微加大以容納新增的按鈕
+        
+        # 💡 優化：設定視窗左上角與 Windows 工作列的圖示
+        icon_path = os.path.join(BASE_DIR, "app.ico")
+        if os.path.exists(icon_path):
+            self.iconbitmap(icon_path)  # 設定視窗標題列圖示
+            
+            # 💡 隱藏絕招：強制 Windows 工作列將此視窗視為獨立應用程式 (覆蓋 Python 預設圖示)
+            try:
+                import ctypes
+                myappid = 'hofireman.powerapp.v1.7' # 任意自訂的獨立 ID
+                ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
+            except Exception:
+                pass
+
         self.grid_columnconfigure(0, weight=1)
         self.grid_columnconfigure(1, weight=1)
         self.grid_rowconfigure(2, weight=1)  # 讓日誌視窗自動延展
