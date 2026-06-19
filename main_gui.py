@@ -34,7 +34,14 @@ class PowerApp(ctk.CTk):
         self.grid_rowconfigure(2, weight=1)  # 讓日誌視窗自動延展
         self.grid_rowconfigure(3, weight=0)  # 底部的開關列保持固定高度
 
-        # 💡 新增：進程追蹤變數，用來記憶當前正在執行的程序
+        # 💡 優化 1：一啟動就確保必要的空資料夾存在，防止捷徑報錯
+        os.makedirs(OUTPUT_FOLDER_PATH, exist_ok=True)
+        os.makedirs(HISTORY_FOLDER_PATH, exist_ok=True)
+
+        # 💡 優化 2：綁定視窗右上角的 "X" 關閉事件，防止產生殭屍進程
+        self.protocol("WM_DELETE_WINDOW", self.on_closing)
+
+        # 進程追蹤變數，用來記憶當前正在執行的程序
         self.current_api_process = None
         self.current_scraper_process = None
 
@@ -118,7 +125,6 @@ class PowerApp(ctk.CTk):
         self.btn_run_api = ctk.CTkButton(self.frame_api, text="▶ 啟動 API 抓取並寫入 DB", command=self.run_api_script, fg_color="#28a745", hover_color="#218838")
         self.btn_run_api.pack(pady=(5, 2))
         
-        # 💡 新增：API 終止按鈕 (預設反灰)
         self.btn_stop_api = ctk.CTkButton(self.frame_api, text="⏹️ 強制終止 API 抓取", command=self.stop_api_script, fg_color="#dc3545", hover_color="#c82333", state="disabled")
         self.btn_stop_api.pack(pady=(2, 5))
         
@@ -158,7 +164,6 @@ class PowerApp(ctk.CTk):
         self.btn_run_scraper = ctk.CTkButton(self.frame_scraper, text="▶ 啟動網頁爬蟲 (最新電費)", command=self.run_scraper_script, fg_color="#007bff", hover_color="#0069d9")
         self.btn_run_scraper.pack(pady=(15, 2))
         
-        # 💡 新增：台電爬蟲終止按鈕 (預設反灰)
         self.btn_stop_scraper = ctk.CTkButton(self.frame_scraper, text="⏹️ 強制終止網頁爬蟲", command=self.stop_scraper_script, fg_color="#dc3545", hover_color="#c82333", state="disabled")
         self.btn_stop_scraper.pack(pady=(2, 10))
 
@@ -197,7 +202,6 @@ class PowerApp(ctk.CTk):
         self.btn_open_history = ctk.CTkButton(self.frame_scraper_shortcuts, text="📁 資料合併歷史位置", command=lambda: self.open_path(HISTORY_FOLDER_PATH), fg_color="#6c757d", hover_color="#5a6268")
         self.btn_open_history.pack(pady=5, padx=30, fill="x")
 
-        # 💡 新增：驅動程式暫存區快速存取
         self.btn_open_driver = ctk.CTkButton(self.frame_scraper_shortcuts, text="📁 網頁爬蟲驅動暫存區", command=self.open_driver_path, fg_color="#6c757d", hover_color="#5a6268")
         self.btn_open_driver.pack(pady=5, padx=30, fill="x")
 
@@ -207,7 +211,6 @@ class PowerApp(ctk.CTk):
         self.log_textbox = ctk.CTkTextbox(self, state="disabled", font=ctk.CTkFont(family="Consolas", size=13))
         self.log_textbox.grid(row=2, column=0, columnspan=2, padx=10, pady=(0, 5), sticky="nsew")
 
-        # 💡 新增：作者版權宣告 (置於左下角)
         self.lbl_author = ctk.CTkLabel(
             self, 
             text="© 2026 Developed by HoFireMan\n國立虎尾科技大學 節電團隊", 
@@ -231,14 +234,11 @@ class PowerApp(ctk.CTk):
             ctk.set_appearance_mode("Light")
             self.switch_theme.configure(text="淺色模式 ☀️")
 
-    # 💡 更新：開啟驅動程式資料夾 (具備智慧切換功能)
     def open_driver_path(self):
-        # 優先檢查並開啟我們自己準備的「離線版」驅動目錄
         if os.path.exists(OFFLINE_DRIVER_DIR):
             self.log(f"系統：偵測到離線驅動，開啟專案目錄...")
             self.open_path(OFFLINE_DRIVER_DIR)
         else:
-            # 若無離線版，則動態抓取 Windows 的 AppData 路徑 (備用)
             self.log(f"系統：未偵測到離線驅動，開啟系統預設暫存區...")
             driver_path = os.path.join(os.environ.get('APPDATA', ''), 'undetected_chromedriver')
             if not os.path.exists(driver_path):
@@ -297,13 +297,16 @@ class PowerApp(ctk.CTk):
             self.log(f"❌ 找不到路徑: {path}")
 
     def run_script_in_thread(self, script_path, cwd, args=None, process_type=None):
-        """背景執行腳本並追蹤進程 (process_type 區分 api 或 scraper)"""
         args = args or []
-        cmd = [sys.executable, script_path] + args
+        
+        # 參數包含 -u 解除 print 緩衝限制
+        cmd = [sys.executable, "-u", script_path] + args
+        
         self.log(f"系統：準備執行 {os.path.basename(script_path)}...\n參數: {args}\n" + "-"*50)
         
         env = os.environ.copy()
         env["PYTHONIOENCODING"] = "utf-8"
+        env["PYTHONUNBUFFERED"] = "1"
         
         def task():
             try:
@@ -312,7 +315,6 @@ class PowerApp(ctk.CTk):
                     text=True, encoding='utf-8', errors='replace', env=env
                 )
                 
-                # 💡 啟動時紀錄進程並切換按鈕狀態 (防呆機制)
                 if process_type == "api":
                     self.current_api_process = process
                     self.after(0, lambda: self.btn_run_api.configure(state="disabled"))
@@ -327,7 +329,6 @@ class PowerApp(ctk.CTk):
                 
                 process.wait()
                 
-                # 若自然執行結束(代碼0)，或被強制中止(代碼不為0)
                 if process.returncode != 0:
                     self.after(0, self.log, "-"*50 + f"\n系統：任務中斷或結束 (代碼: {process.returncode})\n")
                 else:
@@ -336,7 +337,6 @@ class PowerApp(ctk.CTk):
             except Exception as e:
                 self.after(0, self.log, f"\n系統錯誤：無法啟動程序 - {e}\n")
             finally:
-                # 💡 無論如何，結束後恢復按鈕狀態，清除進程紀錄
                 if process_type == "api":
                     self.current_api_process = None
                     self.after(0, lambda: self.btn_run_api.configure(state="normal"))
@@ -348,9 +348,22 @@ class PowerApp(ctk.CTk):
 
         threading.Thread(target=task, daemon=True).start()
 
-    # --- 💡 新增：強制終止邏輯 ---
+    # 💡 確保安全退出的清理邏輯
+    def on_closing(self):
+        """關閉程式時，自動清理背景仍在執行的爬蟲或API"""
+        if self.current_api_process or self.current_scraper_process:
+            self.log_textbox.configure(state="normal")
+            self.log_textbox.insert("end", "\n系統：正在清理背景程序，準備關閉...\n")
+            self.log_textbox.configure(state="disabled")
+            self.update() # 強制刷新畫面讓使用者看到
+            
+            self.stop_api_script()
+            self.stop_scraper_script()
+            
+        self.destroy()
+        sys.exit(0)
+
     def stop_api_script(self):
-        """使用 taskkill 拔除整棵 API 進程樹"""
         if self.current_api_process:
             self.log("系統：正在強制終止 API 抓取程序...")
             try:
@@ -360,7 +373,6 @@ class PowerApp(ctk.CTk):
                 self.log(f"終止程序時發生錯誤: {e}")
 
     def stop_scraper_script(self):
-        """使用 taskkill 拔除整棵爬蟲進程樹 (包含殘留的 Chrome)"""
         if self.current_scraper_process:
             self.log("系統：正在強制終止網頁爬蟲程序與連帶的瀏覽器...")
             try:
@@ -409,7 +421,6 @@ class PowerApp(ctk.CTk):
             end_date = f"{self.cb_end_y.get()}-{self.cb_end_m.get()}-{self.cb_end_d.get()}"
             step_days = self.entry_step_days.get()
             max_workers = self.cb_threads.get()
-            # 💡 指定 process_type="api"
             self.run_script_in_thread(script_path, API_SCRIPT_DIR, args=[start_date, end_date, step_days, max_workers], process_type="api")
         else:
             self.log(f"❌ 找不到檔案: {script_path}")
@@ -417,7 +428,6 @@ class PowerApp(ctk.CTk):
     def run_scraper_script(self):
         script_path = os.path.join(SCRAPER_SCRIPT_DIR, "electricity_bill_scraper_v3.py")
         if os.path.exists(script_path):
-            # 💡 智慧防呆：根據是否有離線檔案，印出不同的日誌提示
             self.log("\n" + "!"*50)
             if os.path.exists(OFFLINE_CHROME_DIR) and os.path.exists(OFFLINE_DRIVER_DIR):
                 self.log("🚀 系統提醒：已偵測到「專屬離線版瀏覽器」。")
@@ -428,7 +438,6 @@ class PowerApp(ctk.CTk):
             self.log("!"*50 + "\n")
             
             browsers_count = self.cb_browsers.get()
-            # 💡 指定 process_type="scraper"
             self.run_script_in_thread(script_path, SCRAPER_SCRIPT_DIR, args=[browsers_count], process_type="scraper")
         else:
             self.log(f"❌ 找不到檔案: {script_path}")
