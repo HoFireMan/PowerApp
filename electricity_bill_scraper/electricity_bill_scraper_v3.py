@@ -53,13 +53,30 @@ def init_driver(worker_id):
     options.add_argument('--disable-backgrounding-occluded-windows')
     options.add_argument('--disable-renderer-backgrounding')
     
-    # 💡 終極解法：自動獲取當前電腦的 Chrome 版本，避免更新導致的 session 崩潰
-    chrome_version = get_chrome_major_version()
-    if chrome_version:
-        driver = uc.Chrome(options=options, version_main=chrome_version)
+    # 💡 終極離線封裝設定：使用相對路徑指向專案資料夾內的 Chrome 與 Driver
+    # BASE_DIR 是 electricity_bill_scraper 資料夾，我們要往上一層回到 Power App 根目錄
+    APP_ROOT_DIR = os.path.dirname(BASE_DIR)
+    
+    custom_chrome_path = os.path.join(APP_ROOT_DIR, 'GoogleChromePortable', 'App', 'Chrome-bin', 'chrome.exe')
+    custom_driver_path = os.path.join(APP_ROOT_DIR, 'chromedriver-win64', 'chromedriver.exe')
+    
+    # 檢查離線版檔案是否存在
+    if os.path.exists(custom_chrome_path) and os.path.exists(custom_driver_path):
+        print(f"    [執行緒-{worker_id}] 啟動專屬離線版瀏覽器 (無視防火牆與版本更新)...")
+        driver = uc.Chrome(
+            options=options, 
+            browser_executable_path=custom_chrome_path,
+            driver_executable_path=custom_driver_path
+        )
     else:
-        # 如果無法讀取登錄檔，就放手讓 uc 套件自己去猜
-        driver = uc.Chrome(options=options)
+        print(f"    [執行緒-{worker_id}] ⚠️ 找不到離線瀏覽器資料夾，退回系統預設連線模式...")
+        # 退回機制：自動獲取當前電腦的 Chrome 版本，避免更新導致的 session 崩潰
+        chrome_version = get_chrome_major_version()
+        if chrome_version:
+            driver = uc.Chrome(options=options, version_main=chrome_version)
+        else:
+            # 如果無法讀取登錄檔，就放手讓 uc 套件自己去猜
+            driver = uc.Chrome(options=options)
     
     # 💡 智慧視窗排列邏輯 (設定每個視窗寬800、高600，避免互相遮擋)
     window_width = 800

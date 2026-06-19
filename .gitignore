@@ -2,15 +2,22 @@
 
 .env
 
-📦 Docker 資料庫實體資料 (如果上傳會很大且包含真實數據)
+📦 Docker 資料庫實體資料 (包含真實數據且檔案極大)
 
 pgdata/
+
+🌐 離線版瀏覽器與驅動程式 (檔案過大會導致 GitHub 拒絕上傳，請保留在本地即可)
+
+GoogleChromePortable/
+chromedriver-win64/
 
 📂 爬蟲產生的 Excel 報表與日誌
 
 electricity_bill_scraper/output/
 electricity_bill_scraper/歷史爬取資料/
+electricity_bill_scraper/merge/
 launcher_error.log
+pg_postgrey.markdown
 
 🐍 Python 系統快取檔
 
@@ -18,16 +25,14 @@ pycache/
 *.pyc
 *.pyo
 
-🔨 打包工具產生的暫存檔 (只上傳原始碼，不需要上傳 exe)
+🔨 打包工具產生的暫存檔與執行檔 (Git 只控管原始碼，產出的 exe 不上傳)
 
 build/
 dist/
 *.spec
+*.exe
 
-🚫 使用者指定不允許上傳的敏感檔案/資料夾
+🚫 含有真實客戶個資的輸入檔 (請在 GitHub 上保留 accounts_example.csv 這類的空範本即可)
 
 electricity_bill_scraper/accounts.csv
 Energy Report Automation/店家ID.xlsx
-electricity_bill_scraper/output/
-electricity_bill_scraper/merge/
-pg_postgrey.markdown

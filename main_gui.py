@@ -19,11 +19,15 @@ ACCOUNTS_CSV_PATH = os.path.join(SCRAPER_SCRIPT_DIR, "accounts.csv")
 OUTPUT_FOLDER_PATH = os.path.join(SCRAPER_SCRIPT_DIR, "output")
 HISTORY_FOLDER_PATH = os.path.join(SCRAPER_SCRIPT_DIR, "歷史爬取資料")
 
+# 💡 新增：離線版瀏覽器與驅動目錄常數
+OFFLINE_CHROME_DIR = os.path.join(BASE_DIR, "GoogleChromePortable")
+OFFLINE_DRIVER_DIR = os.path.join(BASE_DIR, "chromedriver-win64")
+
 class PowerApp(ctk.CTk):
     def __init__(self):
         super().__init__()
 
-        self.title("⚡ 能源管理與自動化中控台 v1.6")
+        self.title("⚡ 能源管理與自動化中控台 v1.7")
         self.geometry("980x900")  # 稍微加大以容納新增的按鈕
         self.grid_columnconfigure(0, weight=1)
         self.grid_columnconfigure(1, weight=1)
@@ -73,7 +77,7 @@ class PowerApp(ctk.CTk):
         self.cb_start_m.set("05")
         self.cb_start_m.pack(side="left", padx=2)
         self.cb_start_d = ctk.CTkComboBox(frame_start, values=days, width=60)
-        self.cb_start_d.set("01")
+        self.cb_start_d.set("20")
         self.cb_start_d.pack(side="left", padx=2)
         
         # 結束日期下拉選單
@@ -193,6 +197,10 @@ class PowerApp(ctk.CTk):
         self.btn_open_history = ctk.CTkButton(self.frame_scraper_shortcuts, text="📁 資料合併歷史位置", command=lambda: self.open_path(HISTORY_FOLDER_PATH), fg_color="#6c757d", hover_color="#5a6268")
         self.btn_open_history.pack(pady=5, padx=30, fill="x")
 
+        # 💡 新增：驅動程式暫存區快速存取
+        self.btn_open_driver = ctk.CTkButton(self.frame_scraper_shortcuts, text="📁 網頁爬蟲驅動暫存區", command=self.open_driver_path, fg_color="#6c757d", hover_color="#5a6268")
+        self.btn_open_driver.pack(pady=5, padx=30, fill="x")
+
         # ==========================================
         # 底部區塊：即時日誌視窗、版權宣告與主題切換
         # ==========================================
@@ -222,6 +230,23 @@ class PowerApp(ctk.CTk):
         else:
             ctk.set_appearance_mode("Light")
             self.switch_theme.configure(text="淺色模式 ☀️")
+
+    # 💡 更新：開啟驅動程式資料夾 (具備智慧切換功能)
+    def open_driver_path(self):
+        # 優先檢查並開啟我們自己準備的「離線版」驅動目錄
+        if os.path.exists(OFFLINE_DRIVER_DIR):
+            self.log(f"系統：偵測到離線驅動，開啟專案目錄...")
+            self.open_path(OFFLINE_DRIVER_DIR)
+        else:
+            # 若無離線版，則動態抓取 Windows 的 AppData 路徑 (備用)
+            self.log(f"系統：未偵測到離線驅動，開啟系統預設暫存區...")
+            driver_path = os.path.join(os.environ.get('APPDATA', ''), 'undetected_chromedriver')
+            if not os.path.exists(driver_path):
+                try:
+                    os.makedirs(driver_path)
+                except Exception:
+                    pass
+            self.open_path(driver_path)
 
     def check_db_status(self):
         self.lbl_api_status.configure(text="⏳ 正在檢查資料庫狀態...", text_color="orange")
@@ -392,6 +417,16 @@ class PowerApp(ctk.CTk):
     def run_scraper_script(self):
         script_path = os.path.join(SCRAPER_SCRIPT_DIR, "electricity_bill_scraper_v3.py")
         if os.path.exists(script_path):
+            # 💡 智慧防呆：根據是否有離線檔案，印出不同的日誌提示
+            self.log("\n" + "!"*50)
+            if os.path.exists(OFFLINE_CHROME_DIR) and os.path.exists(OFFLINE_DRIVER_DIR):
+                self.log("🚀 系統提醒：已偵測到「專屬離線版瀏覽器」。")
+                self.log("本次執行將完全免疫防火牆阻擋與 Chrome 版本更新干擾！")
+            else:
+                self.log("💡 系統提醒：未偵測到離線瀏覽器，將使用系統預設模式 (會自動下載驅動)。")
+                self.log("若發生 [SSL/ASN1: NOT_ENOUGH_DATA] 錯誤，請暫時切換至【手機網路】後再試！")
+            self.log("!"*50 + "\n")
+            
             browsers_count = self.cb_browsers.get()
             # 💡 指定 process_type="scraper"
             self.run_script_in_thread(script_path, SCRAPER_SCRIPT_DIR, args=[browsers_count], process_type="scraper")
