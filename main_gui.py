@@ -73,7 +73,7 @@ class PowerApp(ctk.CTk):
         self.cb_start_m.set("05")
         self.cb_start_m.pack(side="left", padx=2)
         self.cb_start_d = ctk.CTkComboBox(frame_start, values=days, width=60)
-        self.cb_start_d.set("01")
+        self.cb_start_d.set("20")
         self.cb_start_d.pack(side="left", padx=2)
         
         # 結束日期下拉選單
@@ -194,10 +194,19 @@ class PowerApp(ctk.CTk):
         self.btn_open_history.pack(pady=5, padx=30, fill="x")
 
         # ==========================================
-        # 底部區塊：即時日誌視窗與主題切換
+        # 底部區塊：即時日誌視窗、版權宣告與主題切換
         # ==========================================
         self.log_textbox = ctk.CTkTextbox(self, state="disabled", font=ctk.CTkFont(family="Consolas", size=13))
         self.log_textbox.grid(row=2, column=0, columnspan=2, padx=10, pady=(0, 5), sticky="nsew")
+
+        # 💡 新增：作者版權宣告 (置於左下角)
+        self.lbl_author = ctk.CTkLabel(
+            self, 
+            text="© 2026 Developed by HoFireMan\n國立虎尾科技大學 節電團隊", 
+            font=ctk.CTkFont(size=12, weight="bold"),
+            text_color="gray"
+        )
+        self.lbl_author.grid(row=3, column=0, padx=15, pady=(5, 10), sticky="w")
 
         self.switch_theme = ctk.CTkSwitch(self, text="深色模式 🌙", command=self.toggle_theme_mode, font=ctk.CTkFont(weight="bold"))
         self.switch_theme.select()

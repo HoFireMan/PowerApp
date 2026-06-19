@@ -1,3 +1,12 @@
+"""
+能源管理自動化系統 - 多執行緒爬蟲模組
+
+Author: HoFireMan
+GitHub: https://github.com/HoFireMan
+Date: 2026-06-19
+Description: 此模組負責串接感測器 API，並將資料併發寫入 PostgreSQL。
+未經國立虎尾科技大學雲林縣節電團隊授權，請勿將本系統用於商業營利行為。
+"""
 import subprocess
 import os
 import sys
