@@ -30,3 +30,4 @@ electricity_bill_scraper/accounts.csv
 Energy Report Automation/店家ID.xlsx
 electricity_bill_scraper/output/
 electricity_bill_scraper/merge/
+pg_postgrey.markdown
