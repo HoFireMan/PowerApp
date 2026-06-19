@@ -211,6 +211,21 @@ class PowerApp(ctk.CTk):
         self.log_textbox = ctk.CTkTextbox(self, state="disabled", font=ctk.CTkFont(family="Consolas", size=13))
         self.log_textbox.grid(row=2, column=0, columnspan=2, padx=10, pady=(0, 5), sticky="nsew")
 
+        # 💡 新增：設定日誌的專屬顏色標籤 (適用於深色模式的亮色系)
+        self.log_textbox.tag_config("t1", foreground="#5DADE2") # 淺藍 (執行緒-1)
+        self.log_textbox.tag_config("t2", foreground="#48C9B0") # 淺綠 (執行緒-2)
+        self.log_textbox.tag_config("t3", foreground="#F4D03F") # 淺黃 (執行緒-3)
+        self.log_textbox.tag_config("t4", foreground="#F5B041") # 橘色 (執行緒-4)
+        self.log_textbox.tag_config("t5", foreground="#AF7AC5") # 紫色 (執行緒-5)
+        self.log_textbox.tag_config("t6", foreground="#EC7063") # 紅色 (執行緒-6)
+        self.log_textbox.tag_config("t7", foreground="#E59866") # 泥色 (執行緒-7)
+        self.log_textbox.tag_config("t8", foreground="#AAB7B8") # 灰色 (執行緒-8)
+        self.log_textbox.tag_config("t9", foreground="#FF69B4") # 粉紅 (執行緒-9)
+        self.log_textbox.tag_config("t10", foreground="#58D68D")# 亮綠 (執行緒-10)
+        self.log_textbox.tag_config("sys", foreground="#FDFEFE") # 白色 (系統提示)
+        self.log_textbox.tag_config("err", foreground="#E74C3C") # 亮紅 (錯誤警告)
+        self.log_textbox.tag_config("ok", foreground="#2ECC71")  # 亮綠 (成功訊息)
+
         self.lbl_author = ctk.CTkLabel(
             self, 
             text="© 2026 Developed by HoFireMan\n國立虎尾科技大學 節電團隊", 
@@ -270,20 +285,41 @@ class PowerApp(ctk.CTk):
         if not clean_msg:
             self.log_textbox.configure(state="disabled")
             return
+
+        # 💡 新增：自動判斷這行訊息屬於誰，並給予對應的顏色標籤
+        tag = None
+        if "[執行緒-1]" in clean_msg: tag = "t1"
+        elif "[執行緒-2]" in clean_msg: tag = "t2"
+        elif "[執行緒-3]" in clean_msg: tag = "t3"
+        elif "[執行緒-4]" in clean_msg: tag = "t4"
+        elif "[執行緒-5]" in clean_msg: tag = "t5"
+        elif "[執行緒-6]" in clean_msg: tag = "t6"
+        elif "[執行緒-7]" in clean_msg: tag = "t7"
+        elif "[執行緒-8]" in clean_msg: tag = "t8"
+        elif "[執行緒-9]" in clean_msg: tag = "t9"
+        elif "[執行緒-10]" in clean_msg: tag = "t10"
+        elif "系統：" in clean_msg or "準備執行" in clean_msg or "💡" in clean_msg: tag = "sys"
+        elif "❌" in clean_msg or "錯誤" in clean_msg or "崩潰" in clean_msg: tag = "err"
+        elif "✅" in clean_msg or "成功" in clean_msg: tag = "ok"
+
         last_line_start = self.log_textbox.index("end-2c linestart")
         last_line_text = self.log_textbox.get(last_line_start, "end-1c")
 
         if "總進度:" in clean_msg and "%|" in clean_msg:
             if "總進度:" in last_line_text and "%|" in last_line_text:
                 self.log_textbox.delete(last_line_start, "end-1c")
-                self.log_textbox.insert(ctk.END, clean_msg)
+                if tag: self.log_textbox.insert(ctk.END, clean_msg, tags=tag)
+                else: self.log_textbox.insert(ctk.END, clean_msg)
             else:
-                self.log_textbox.insert(ctk.END, clean_msg)
+                if tag: self.log_textbox.insert(ctk.END, clean_msg, tags=tag)
+                else: self.log_textbox.insert(ctk.END, clean_msg)
         else:
             if "總進度:" in last_line_text and "%|" in last_line_text:
-                self.log_textbox.insert(ctk.END, "\n" + clean_msg + "\n")
+                if tag: self.log_textbox.insert(ctk.END, "\n" + clean_msg + "\n", tags=tag)
+                else: self.log_textbox.insert(ctk.END, "\n" + clean_msg + "\n")
             else:
-                self.log_textbox.insert(ctk.END, clean_msg + "\n")
+                if tag: self.log_textbox.insert(ctk.END, clean_msg + "\n", tags=tag)
+                else: self.log_textbox.insert(ctk.END, clean_msg + "\n")
 
         self.log_textbox.see(ctk.END)
         self.log_textbox.configure(state="disabled")
