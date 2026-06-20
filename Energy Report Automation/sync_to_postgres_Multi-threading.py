@@ -14,22 +14,27 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 # 💡 匯入 dotenv 套件
 from dotenv import load_dotenv
 
-# 💡 載入 .env 檔案中的敏感資訊
-load_dotenv()
+# --- 1. 絕對路徑與環境變數設定 ---
+# 💡 終極防護：動態計算絕對路徑，確保無論如何都能精準找到檔案
+CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
+ROOT_DIR = os.path.dirname(CURRENT_DIR) # 往上一層回到 Power App 根目錄
+ENV_PATH = os.path.join(ROOT_DIR, ".env")
 
-# --- 1. 設定與常數 ---
-# 🔒 改為動態讀取環境變數，若找不到則給予空值避免報錯
-DB_HOST = os.getenv("DB_HOST")
-DB_PORT = os.getenv("DB_PORT")
-DB_NAME = os.getenv("DB_NAME")
-DB_USER = os.getenv("DB_USER")
-DB_PASS = os.getenv("DB_PASS")
+# 💡 明確指定 .env 檔案的絕對路徑來載入敏感資訊
+load_dotenv(ENV_PATH)
+
+# 🔒 動態讀取環境變數，並加上「預設值」防呆機制
+DB_HOST = os.getenv("DB_HOST", "localhost")
+DB_PORT = os.getenv("DB_PORT", "5432")
+DB_NAME = os.getenv("DB_NAME", "energy_reports")
+DB_USER = os.getenv("DB_USER", "admin")
+DB_PASS = os.getenv("DB_PASS", "admin_password")
 
 # 🔒 API URL 改為動態讀取
 API_URL = os.getenv("API_URL")
 
-# 爬蟲與 Excel 設定
-EXCEL_FILE_PATH = "店家ID.xlsx"
+# 爬蟲與 Excel 設定 (💡 同樣改為絕對路徑，保證不會迷路)
+EXCEL_FILE_PATH = os.path.join(CURRENT_DIR, "店家ID.xlsx")
 EXCEL_SHEET_NAME = "店家資訊"
 EXCEL_COLUMN_NAME = "ID"
 
@@ -140,7 +145,7 @@ def fetch_and_store_task(branch_code, start_str, end_str, current_step, db_pool)
     try:
         # 🔒 使用環境變數的 API URL
         if not API_URL:
-            raise Exception("尚未設定 API_URL 環境變數")
+            raise Exception("尚未設定 API_URL 環境變數，請確認 .env 檔案是否存在且格式正確。")
             
         response = requests.post(API_URL, headers=HEADERS, json=payload, timeout=60)
         response.raise_for_status()
