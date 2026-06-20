@@ -236,7 +236,8 @@ if __name__ == '__main__':
                 for branch, seg in tasks
             }
             
-            for future in tqdm(as_completed(future_to_task), total=len(tasks), desc="總進度"):
+            # 💡 優化：強制 tqdm 輸出至未緩衝的 sys.stdout，並設定 miniters=1 確保每一個任務完成都會「立刻」推動進度條
+            for future in tqdm(as_completed(future_to_task), total=len(tasks), desc="總進度", file=sys.stdout, miniters=1, mininterval=0.1):
                 result = future.result()
                 if result['status'] == 'success':
                     total_processed += result['count']
