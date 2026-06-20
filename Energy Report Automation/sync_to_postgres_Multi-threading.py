@@ -10,35 +10,30 @@ from psycopg2.pool import ThreadedConnectionPool
 from psycopg2.extras import execute_batch
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import threading
 
 # 💡 匯入 dotenv 套件
 from dotenv import load_dotenv
 
 # --- 1. 絕對路徑與環境變數設定 ---
-# 💡 終極防護：動態計算絕對路徑，確保無論如何都能精準找到檔案
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
-ROOT_DIR = os.path.dirname(CURRENT_DIR) # 往上一層回到 Power App 根目錄
+ROOT_DIR = os.path.dirname(CURRENT_DIR)
 ENV_PATH = os.path.join(ROOT_DIR, ".env")
 
-# 💡 明確指定 .env 檔案的絕對路徑來載入敏感資訊
 load_dotenv(ENV_PATH)
 
-# 🔒 動態讀取環境變數，並加上「預設值」防呆機制
 DB_HOST = os.getenv("DB_HOST", "localhost")
 DB_PORT = os.getenv("DB_PORT", "5432")
 DB_NAME = os.getenv("DB_NAME", "energy_reports")
 DB_USER = os.getenv("DB_USER", "admin")
 DB_PASS = os.getenv("DB_PASS", "admin_password")
 
-# 🔒 API URL 改為動態讀取
 API_URL = os.getenv("API_URL")
 
-# 爬蟲與 Excel 設定 (💡 同樣改為絕對路徑，保證不會迷路)
 EXCEL_FILE_PATH = os.path.join(CURRENT_DIR, "店家ID.xlsx")
 EXCEL_SHEET_NAME = "店家資訊"
 EXCEL_COLUMN_NAME = "ID"
 
-# 預設設定 (供單獨執行腳本時使用)
 DEFAULT_START_TOTAL = "2020-05-20"  
 DEFAULT_END_TOTAL = "2026-06-01"    
 DEFAULT_STEP_DAYS = 60              
@@ -52,6 +47,20 @@ FURNITURE_KEYWORDS = [
     '除濕機', '空氣清淨機', '洗衣機', '烘衣機', '電視', '投影機',
     '插座', '電腦', '伺服器', '監視器', '吹風機', '熱水器', '抽風機'
 ]
+
+# 💡 效能優化：為每個執行緒建立專屬的連線池 (Keep-Alive)
+thread_local = threading.local()
+
+def get_session():
+    """獲取當前執行緒專屬的 requests Session，保持 TCP 連線不中斷"""
+    if not hasattr(thread_local, "session"):
+        thread_local.session = requests.Session()
+        # 掛載 adapter 來增加連線池大小與重試機制，進一步提升穩定性
+        adapter = requests.adapters.HTTPAdapter(pool_connections=10, pool_maxsize=10, max_retries=3)
+        thread_local.session.mount('http://', adapter)
+        thread_local.session.mount('https://', adapter)
+    return thread_local.session
+
 
 # --- 2. 輔助函式 ---
 def get_date_segments(start_str, end_str, step):
@@ -143,11 +152,12 @@ def fetch_and_store_task(branch_code, start_str, end_str, current_step, db_pool)
     }
 
     try:
-        # 🔒 使用環境變數的 API URL
         if not API_URL:
             raise Exception("尚未設定 API_URL 環境變數，請確認 .env 檔案是否存在且格式正確。")
             
-        response = requests.post(API_URL, headers=HEADERS, json=payload, timeout=60)
+        # 💡 效能優化：使用專屬的 Session 隧道發送請求，省去每次重新 SSL 握手的大量時間
+        session = get_session()
+        response = session.post(API_URL, headers=HEADERS, json=payload, timeout=60)
         response.raise_for_status()
         json_data = response.json()
         
@@ -236,7 +246,6 @@ if __name__ == '__main__':
                 for branch, seg in tasks
             }
             
-            # 💡 優化：強制 tqdm 輸出至未緩衝的 sys.stdout，並設定 miniters=1 確保每一個任務完成都會「立刻」推動進度條
             for future in tqdm(as_completed(future_to_task), total=len(tasks), desc="總進度", file=sys.stdout, miniters=1, mininterval=0.1):
                 result = future.result()
                 if result['status'] == 'success':
