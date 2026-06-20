@@ -22,7 +22,12 @@ ENV_PATH = os.path.join(ROOT_DIR, ".env")
 
 load_dotenv(ENV_PATH)
 
-DB_HOST = os.getenv("DB_HOST", "localhost")
+# 💡 效能優化：預設值從 localhost 改為 127.0.0.1，徹底避開 IPv6 (::1) 造成的 DNS 尋址超時陷阱
+DB_HOST = os.getenv("DB_HOST", "127.0.0.1")
+# 如果 .env 裡面寫的是 localhost，我們也強制把它轉成 127.0.0.1
+if DB_HOST.lower() == "localhost":
+    DB_HOST = "127.0.0.1"
+    
 DB_PORT = os.getenv("DB_PORT", "5432")
 DB_NAME = os.getenv("DB_NAME", "energy_reports")
 DB_USER = os.getenv("DB_USER", "admin")
@@ -55,6 +60,10 @@ def get_session():
     """獲取當前執行緒專屬的 requests Session，保持 TCP 連線不中斷"""
     if not hasattr(thread_local, "session"):
         thread_local.session = requests.Session()
+        
+        # 💡 終極破甲：強制無視 Windows 作業系統的 Proxy/VPN 設定，防止每次請求都被攔截檢查
+        thread_local.session.trust_env = False 
+        
         # 掛載 adapter 來增加連線池大小與重試機制，進一步提升穩定性
         adapter = requests.adapters.HTTPAdapter(pool_connections=10, pool_maxsize=10, max_retries=3)
         thread_local.session.mount('http://', adapter)
@@ -155,7 +164,6 @@ def fetch_and_store_task(branch_code, start_str, end_str, current_step, db_pool)
         if not API_URL:
             raise Exception("尚未設定 API_URL 環境變數，請確認 .env 檔案是否存在且格式正確。")
             
-        # 💡 效能優化：使用專屬的 Session 隧道發送請求，省去每次重新 SSL 握手的大量時間
         session = get_session()
         response = session.post(API_URL, headers=HEADERS, json=payload, timeout=60)
         response.raise_for_status()
