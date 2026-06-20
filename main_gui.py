@@ -436,7 +436,11 @@ class PowerApp(ctk.CTk):
         self.log(f"系統：準備啟動 Docker 節電資料儲存伺服器...\n" + "-"*50)
         def task():
             try:
-                process = subprocess.Popen("docker-compose up -d", cwd=API_SCRIPT_DIR, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding='utf-8', errors='replace', shell=True)
+                # 💡 終極修復：動態鎖定外層的 .env 絕對路徑，並傳給 Docker
+                env_path = os.path.join(BASE_DIR, ".env")
+                cmd = f'docker-compose --env-file "{env_path}" up -d'
+                
+                process = subprocess.Popen(cmd, cwd=API_SCRIPT_DIR, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding='utf-8', errors='replace', shell=True)
                 for line in process.stdout: self.after(0, self.log, line.strip('\n'))
                 process.wait()
                 if process.returncode == 0:
@@ -452,7 +456,11 @@ class PowerApp(ctk.CTk):
         self.log(f"系統：準備關閉 Docker 節電資料儲存伺服器...\n" + "-"*50)
         def task():
             try:
-                process = subprocess.Popen("docker-compose down", cwd=API_SCRIPT_DIR, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding='utf-8', errors='replace', shell=True)
+                # 💡 終極修復：關閉時也需要明確指定 .env 檔案位置
+                env_path = os.path.join(BASE_DIR, ".env")
+                cmd = f'docker-compose --env-file "{env_path}" down'
+                
+                process = subprocess.Popen(cmd, cwd=API_SCRIPT_DIR, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding='utf-8', errors='replace', shell=True)
                 for line in process.stdout: self.after(0, self.log, line.strip('\n'))
                 process.wait()
                 if process.returncode == 0:
