@@ -14,53 +14,59 @@ from selenium.webdriver.common.action_chains import ActionChains
 from selenium.common.exceptions import TimeoutException, NoAlertPresentException
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-# --- 配置區 ---
-# 💡 動態獲取當前腳本所在的資料夾路徑 (完美相容 GUI 系統的呼叫)
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+# 💡 新增：資料庫操作與環境變數套件
+import psycopg2
+from psycopg2.extras import execute_batch
+from dotenv import load_dotenv
 
-# CSV 檔案路徑與輸出路徑改為動態拼裝
+# --- 配置區 ---
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+APP_ROOT_DIR = os.path.dirname(BASE_DIR) # 往上一層回到 Power App 根目錄
+
+# CSV 檔案路徑與輸出路徑
 ACCOUNTS_CSV_PATH = os.path.join(BASE_DIR, 'accounts.csv')
 OUTPUT_FOLDER_PATH = os.path.join(BASE_DIR, 'output')
 
+# 💡 載入 .env 檔案中的資料庫連線資訊
+ENV_PATH = os.path.join(APP_ROOT_DIR, ".env")
+load_dotenv(ENV_PATH)
+
+DB_HOST = os.getenv("DB_HOST", "127.0.0.1")
+if DB_HOST.lower() == "localhost":
+    DB_HOST = "127.0.0.1" # 強制避開 IPv6 超時陷阱
+DB_PORT = os.getenv("DB_PORT", "5432")
+DB_NAME = os.getenv("DB_NAME", "energy_reports")
+DB_USER = os.getenv("DB_USER", "admin")
+DB_PASS = os.getenv("DB_PASS", "admin_password")
+
 # 💡 多執行緒與重試設定
-DEFAULT_MAX_BROWSERS = 3     # 預設同時運作的瀏覽器數量
-MAX_RETRIES = 3              # 單一帳戶最高重試次數
+DEFAULT_MAX_BROWSERS = 3     
+MAX_RETRIES = 3              
 
 
 # --- 核心邏輯區 ---
 
 def get_chrome_major_version():
-    """💡 自動從 Windows 登錄檔獲取當前安裝的 Chrome 主版本號"""
     try:
         import winreg
-        # Chrome 的版本號通常儲存在這個登錄檔路徑中
         key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Google\Chrome\BLBeacon")
         version_str, _ = winreg.QueryValueEx(key, "version")
-        # 取得主版本號 (例如 "149.0.7827.103" 會被截斷成 149)
         major_version = int(version_str.split('.')[0])
         return major_version
     except Exception:
         return None
 
 def init_driver(worker_id):
-    """初始化 undetected-chromedriver，並根據 worker_id 排列視窗位置"""
     import undetected_chromedriver as uc
     options = uc.ChromeOptions()
     options.add_argument('--disable-popup-blocking')
-    
-    # 關閉 Chrome 背景節能與降速機制
     options.add_argument('--disable-background-timer-throttling')
     options.add_argument('--disable-backgrounding-occluded-windows')
     options.add_argument('--disable-renderer-backgrounding')
     
-    # 💡 終極離線封裝設定：使用相對路徑指向專案資料夾內的 Chrome 與 Driver
-    # BASE_DIR 是 electricity_bill_scraper 資料夾，我們要往上一層回到 Power App 根目錄
-    APP_ROOT_DIR = os.path.dirname(BASE_DIR)
-    
     custom_chrome_path = os.path.join(APP_ROOT_DIR, 'GoogleChromePortable', 'App', 'Chrome-bin', 'chrome.exe')
     custom_driver_path = os.path.join(APP_ROOT_DIR, 'chromedriver-win64', 'chromedriver.exe')
     
-    # 檢查離線版檔案是否存在
     if os.path.exists(custom_chrome_path) and os.path.exists(custom_driver_path):
         print(f"    [執行緒-{worker_id}] 啟動專屬離線版瀏覽器 (無視防火牆與版本更新)...")
         driver = uc.Chrome(
@@ -70,50 +76,38 @@ def init_driver(worker_id):
         )
     else:
         print(f"    [執行緒-{worker_id}] ⚠️ 找不到離線瀏覽器資料夾，退回系統預設連線模式...")
-        # 退回機制：自動獲取當前電腦的 Chrome 版本，避免更新導致的 session 崩潰
         chrome_version = get_chrome_major_version()
         if chrome_version:
             driver = uc.Chrome(options=options, version_main=chrome_version)
         else:
-            # 如果無法讀取登錄檔，就放手讓 uc 套件自己去猜
             driver = uc.Chrome(options=options)
     
-    # 💡 智慧視窗排列邏輯 (設定每個視窗寬800、高600，避免互相遮擋)
     window_width = 800
     window_height = 600
     
     if worker_id == 1:
-        driver.set_window_rect(x=0, y=0, width=window_width, height=window_height)        # 左上角
+        driver.set_window_rect(x=0, y=0, width=window_width, height=window_height)
     elif worker_id == 2:
-        driver.set_window_rect(x=800, y=0, width=window_width, height=window_height)      # 右上角
+        driver.set_window_rect(x=800, y=0, width=window_width, height=window_height)
     elif worker_id == 3:
-        driver.set_window_rect(x=0, y=600, width=window_width, height=window_height)      # 左下角
+        driver.set_window_rect(x=0, y=600, width=window_width, height=window_height)
     else:
-        # 如果超過3個視窗，就稍微重疊排列
         driver.set_window_rect(x=100*worker_id, y=100*worker_id, width=window_width, height=window_height)
         
     return driver
 
 
 def wait_for_cloudflare(driver, timeout=30, prefix=""):
-    """
-    嚴格等待 Cloudflare 驗證通過 (智能點擊優化版)：
-    不強制點擊，而是針對 CF 驗證框進行安全的滑鼠懸停與微動。
-    若 3 秒後仍未自動通過，會精準計算出驗證框左側勾選方塊的位置並模擬點擊。
-    """
     start_time = time.time()
     actions = ActionChains(driver)
     clicked_cf = False
     
     while time.time() - start_time < timeout:
-        # 尋找頁面中所有的 Cloudflare 隱藏 input
         cf_inputs = driver.find_elements(By.NAME, "cf-turnstile-response")
         
-        # 如果畫面上沒有 CF 組件，代表不需驗證直接放行
         if not cf_inputs:
             return True
 
-        # 嚴格檢查：只要有任何一個 CF 還沒拿到 Token (value 為空)，就不算通過
         all_passed = True
         for cf_input in cf_inputs:
             if not cf_input.get_attribute("value"):
@@ -122,37 +116,26 @@ def wait_for_cloudflare(driver, timeout=30, prefix=""):
         
         if all_passed:
             print(f"    {prefix}✅ Cloudflare 驗證已成功通過！")
-            time.sleep(1) # 拿到 Token 後稍微停頓一秒，確保按鈕解除鎖定
+            time.sleep(1) 
             return True
             
-        # 💡 軌跡模擬與智能點擊
         try:
             cf_widgets = driver.find_elements(By.CLASS_NAME, "cf-turnstile")
             if cf_widgets and cf_widgets[0].is_displayed():
                 widget = cf_widgets[0]
                 
-                # 如果等待超過 3 秒還沒拿到 token，且還未點擊過，代表 CF 需要手動勾選
                 if (time.time() - start_time > 1) and not clicked_cf:
                     print(f"    {prefix}⚠️ CF 尚未自動通過，嘗試手動點擊「驗證您是人類」...")
-                    
-                    # 取得元素大小，計算勾選框的相對位置 (勾選框通常在最左邊)
                     width = widget.size.get('width', 300)
                     if width == 0: width = 300
-                    
-                    # ActionChains offset 是從元素中心點起算
-                    # 往左移 (width / 2)，再加上 30 像素回到勾選方塊的位置
                     target_x = -(width / 2) + 30
-                    
                     try:
                         actions.move_to_element_with_offset(widget, target_x, 0).pause(0.5).click().perform()
                     except:
-                        # 備用方案：如果偏移發生異常，直接點擊中心點
                         actions.move_to_element(widget).click().perform()
-                        
                     clicked_cf = True
-                    time.sleep(0.5) # 點擊後多等一下讓它轉圈
+                    time.sleep(0.5) 
                 else:
-                    # 尚未達點擊時間或已點擊，就在原地輕微抖動
                     x_offset = random.randint(-15, 15)
                     y_offset = random.randint(-5, 5)
                     actions.move_to_element_with_offset(widget, x_offset, y_offset).perform()
@@ -165,15 +148,11 @@ def wait_for_cloudflare(driver, timeout=30, prefix=""):
 
 
 def scrape_single_account(driver, account, worker_id=""):
-    """依照台電最新版網頁流程爬取單一帳戶"""
     prefix = f"[執行緒-{worker_id}] " if worker_id else ""
     result = {"電號": str(account['電號']), "用戶戶名": account['用戶戶名'], "公司名稱": account['公司名稱']}
     wait = WebDriverWait(driver, 15) 
     
     try:
-        # ==========================================
-        # 步驟 1: 前往首頁並輸入電號
-        # ==========================================
         driver.get("https://service.taipower.com.tw/ebpps2/simplebill/simple-query-bill")
         
         ele_number_input = wait.until(EC.element_to_be_clickable((By.ID, "custNo")))
@@ -188,56 +167,36 @@ def scrape_single_account(driver, account, worker_id=""):
         submit_btn = driver.find_element(By.XPATH, "//input[@type='submit' and @value='查詢']")
         driver.execute_script("arguments[0].click();", submit_btn)
         
-        # ==========================================
-        # 步驟 2: 進入「繳費狀況查詢」，點擊查看明細
-        # ==========================================
         print(f"    {prefix}等待結果載入並尋找【查看帳單明細】按鈕...")
-        time.sleep(1)  # 強制等待 AJAX 請求與「載入中」動畫消失
+        time.sleep(1)  
         
-        # 等待按鈕處於可互動狀態
         orange_btn = wait.until(EC.element_to_be_clickable((By.ID, "showBillQueryDetail")))
-        
         time.sleep(1) 
         
-        # 💡 擬真滑鼠：移動到按鈕上稍微停頓再點擊
         actions = ActionChains(driver)
         actions.move_to_element(orange_btn).pause(random.uniform(0.3, 0.7)).click().perform()
         
-        # ==========================================
-        # 步驟 3: 展開戶名輸入區，模擬滑鼠軌跡、等待 CF 驗證後一次性填入
-        # ==========================================
         print(f"    {prefix}準備輸入用戶戶名: {result['用戶戶名']}...")
-        time.sleep(1)  # 讓點擊後的表單與 CF 模組有時間展開渲染
+        time.sleep(1)  
         
-        # 等待輸入框出現
         name_input = wait.until(EC.visibility_of_element_located((By.ID, "billName")))
-        
         time.sleep(0.5)
         
-        # 💡 擬真滑鼠軌跡：在輸入框周圍隨機游移 (注意這裡先加上 .perform() 執行滑鼠動作)
         x_offset = random.randint(-40, 40)
         y_offset = random.randint(-15, 15)
         actions.move_to_element_with_offset(name_input, x_offset, y_offset).pause(random.uniform(0.2, 0.5)).perform()
         
-        # 💡 讓 Cloudflare 偵測到鍵盤與點擊行為，可大幅降低卡在勾選框的機率
         actions.move_to_element(name_input).click().perform()
         name_input.clear()
         name_input.send_keys(result['用戶戶名'])
         time.sleep(1)
         
-        # 填寫完畢後，等待/處理 Cloudflare 驗證
         print(f"    {prefix}等待 CF 驗證...")
         wait_for_cloudflare(driver, prefix=prefix)
         
-        # 定位查詢明細按鈕
         detail_btn = driver.find_element(By.XPATH, "//input[@name='Search' and @value='查詢明細']")
-        
-        # 擬真滑鼠移動過去點擊
         actions.move_to_element(detail_btn).pause(random.uniform(0.3, 0.6)).click().perform()
         
-        # ==========================================
-        # 步驟 4: 進入結果頁面，解析動態圖表數據
-        # ==========================================
         print(f"    {prefix}成功進入資料頁面，準備擷取用電數據...")
         wait.until(EC.presence_of_element_located((By.ID, "chartKWHdiv")))
         
@@ -305,7 +264,6 @@ def scrape_single_account(driver, account, worker_id=""):
 
 
 def worker_task(worker_id, chunk_df, total_accounts):
-    """單一執行緒的工作任務"""
     stagger_delay = (worker_id - 1) * 12 + random.uniform(2, 5)
     print(f"啟動 [執行緒-{worker_id}]：分配到 {len(chunk_df)} 筆資料，將於 {stagger_delay:.1f} 秒後啟動瀏覽器...")
     time.sleep(stagger_delay)
@@ -351,9 +309,7 @@ def worker_task(worker_id, chunk_df, total_accounts):
 
 
 def process_and_format_data(results):
-    """將爬取結果整理成標準的 長表格 (Tidy Data) 格式"""
     final_data_rows = []
-    
     all_years = set(y for r in results for y in r.get("公司年份資料", {}).keys())
     if not all_years: return pd.DataFrame()
     year_range = sorted(list(all_years))
@@ -410,10 +366,129 @@ def process_and_format_data(results):
             
     return df[base_cols]
 
+# ==========================================
+# 💡 新增：儲存至 PostgreSQL 資料庫模組
+# ==========================================
+def save_to_database(df):
+    if df.empty:
+        return
+
+    print(f"\n🐳 系統：準備將 {len(df)} 筆帳單數據寫入 PostgreSQL 資料庫...")
+    
+    # 建表語法 (自癒機制：若資料表不存在則自動建立，保護既有 pgdata)
+    create_table_query = """
+    CREATE TABLE IF NOT EXISTS taipower_billing_records (
+        id SERIAL PRIMARY KEY,
+        store_name VARCHAR(255) NOT NULL,
+        account_name VARCHAR(255),
+        account_number VARCHAR(100) NOT NULL,
+        billing_period VARCHAR(100),
+        billing_year INTEGER NOT NULL,
+        billing_month VARCHAR(20) NOT NULL,
+        usage_degree NUMERIC(15, 4),
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        CONSTRAINT unique_taipower_record UNIQUE (store_name, account_number, billing_year, billing_month)
+    );
+    """
+    
+    try:
+        conn = psycopg2.connect(
+            host=DB_HOST, port=DB_PORT, dbname=DB_NAME, user=DB_USER, password=DB_PASS
+        )
+        cursor = conn.cursor()
+        
+        # 1. 確保資料表存在
+        cursor.execute(create_table_query)
+        
+        # 2. 準備寫入的資料
+        records_to_insert = []
+        for _, row in df.iterrows():
+            usage_val = float(row['用電量(度)']) if pd.notnull(row['用電量(度)']) else 0
+            records_to_insert.append((
+                row['店名'], row['用戶戶名'], str(row['電號']),
+                row['最新計費期間'], int(row['年份']), str(row['月份']), usage_val
+            ))
+
+        # 3. 執行批次寫入 (UPSERT: 如果已經抓過同一個月的，就更新用電量與計費期間)
+        insert_query = """
+            INSERT INTO taipower_billing_records (
+                store_name, account_name, account_number, billing_period,
+                billing_year, billing_month, usage_degree
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (store_name, account_number, billing_year, billing_month)
+            DO UPDATE SET
+                usage_degree = EXCLUDED.usage_degree,
+                billing_period = EXCLUDED.billing_period,
+                created_at = CURRENT_TIMESTAMP;
+        """
+        execute_batch(cursor, insert_query, records_to_insert)
+        conn.commit()
+        print(f"    ✅ 資料庫寫入成功：已新增或更新 {len(records_to_insert)} 筆資料表 [taipower_billing_records]！")
+
+    except Exception as e:
+        print(f"    ❌ 資料庫寫入失敗，請確認資料庫已開啟且連線正常: {e}")
+    finally:
+        if 'conn' in locals() and conn:
+            cursor.close()
+            conn.close()
+
+# ==========================================
+# 💡 新增：儲存「失敗紀錄」至 PostgreSQL 資料庫模組
+# ==========================================
+def save_errors_to_database(df):
+    if df.empty:
+        return
+
+    print(f"\n🐳 系統：準備將 {len(df)} 筆【失敗紀錄】寫入 PostgreSQL 資料庫...")
+    
+    # 建立錯誤日誌表 (每次寫入只做紀錄，不覆蓋，當作歷程追蹤)
+    create_table_query = """
+    CREATE TABLE IF NOT EXISTS taipower_scraping_errors (
+        id SERIAL PRIMARY KEY,
+        store_name VARCHAR(255),
+        account_name VARCHAR(255),
+        account_number VARCHAR(100),
+        error_message TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+    """
+    
+    try:
+        conn = psycopg2.connect(
+            host=DB_HOST, port=DB_PORT, dbname=DB_NAME, user=DB_USER, password=DB_PASS
+        )
+        cursor = conn.cursor()
+        
+        # 1. 確保錯誤資料表存在
+        cursor.execute(create_table_query)
+        
+        # 2. 準備寫入的資料
+        records_to_insert = []
+        for _, row in df.iterrows():
+            records_to_insert.append((
+                row.get('店名', ''), row.get('用戶戶名', ''), str(row.get('電號', '')), row.get('備註', '')
+            ))
+
+        # 3. 執行批次寫入 (單純紀錄日誌)
+        insert_query = """
+            INSERT INTO taipower_scraping_errors (
+                store_name, account_name, account_number, error_message
+            ) VALUES (%s, %s, %s, %s);
+        """
+        execute_batch(cursor, insert_query, records_to_insert)
+        conn.commit()
+        print(f"    ✅ 資料庫寫入成功：已記錄 {len(records_to_insert)} 筆失敗資訊至 [taipower_scraping_errors]！")
+
+    except Exception as e:
+        print(f"    ❌ 失敗紀錄寫入資料庫失敗: {e}")
+    finally:
+        if 'conn' in locals() and conn:
+            cursor.close()
+            conn.close()
+
 
 # --- 主執行區 ---
 if __name__ == "__main__":
-    # 💡 接收從 main_gui.py 傳來的參數 (瀏覽器數量)
     if len(sys.argv) >= 2:
         max_browsers = int(sys.argv[1])
     else:
@@ -460,7 +535,7 @@ if __name__ == "__main__":
             except Exception as e:
                 print(f"❌ 某個執行緒發生崩潰: {e}")
 
-    print("\n--- 🏁 所有執行緒皆已完成，準備寫入檔案 ---")
+    print("\n--- 🏁 所有執行緒皆已完成，準備寫入檔案與資料庫 ---")
 
     successful_results = [r for r in all_results if r.get("公司年份資料")]
     error_results = [r for r in all_results if not r.get("公司年份資料")]
@@ -468,12 +543,21 @@ if __name__ == "__main__":
     df_final_data = process_and_format_data(successful_results)
     df_final_errors = pd.DataFrame([{"店名": r.get("公司名稱"), "用戶戶名": r.get("用戶戶名"), "電號": r.get("電號"), "備註": r.get("備註")} for r in error_results])
 
+    # 💡 新增：若有爬到成功的資料，同步寫入資料庫
+    if not df_final_data.empty:
+        save_to_database(df_final_data)
+
+    # 💡 新增：將失敗的紀錄也獨立寫入資料庫的錯誤日誌表
+    if not df_final_errors.empty:
+        save_errors_to_database(df_final_errors)
+
+    # 匯出至 Excel 檔案
     if not df_final_data.empty or not df_final_errors.empty:
         timestamp = datetime.now().strftime('%Y%m%d_%H%M')
         new_filename = f"爬取結果_{timestamp}.xlsx"
         new_output_path = os.path.join(OUTPUT_FOLDER_PATH, new_filename)
         
-        print(f"正在將本次爬取結果寫入新檔案: {new_output_path}")
+        print(f"\n正在將本次爬取結果寫入 Excel 檔案: {new_output_path}")
         try:
             os.makedirs(OUTPUT_FOLDER_PATH, exist_ok=True)
             with pd.ExcelWriter(new_output_path, engine="openpyxl") as writer:
@@ -481,7 +565,7 @@ if __name__ == "__main__":
                     df_final_data.to_excel(writer, index=False, sheet_name="台電歷年電費")
                 if not df_final_errors.empty:
                     df_final_errors[['店名', '用戶戶名', '電號', '備註']].to_excel(writer, index=False, sheet_name="爬取失敗名單")
-            print(f"✅ 成功建立檔案: {new_output_path}")
+            print(f"✅ 成功建立 Excel 檔案: {new_output_path}")
         except Exception as e:
             print(f"❌ 錯誤：儲存 Excel 檔案失敗 - {e}")
     else:
