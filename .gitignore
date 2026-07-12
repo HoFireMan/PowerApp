@@ -4,19 +4,24 @@
 
 📦 Docker 資料庫實體資料 (包含真實數據且檔案極大)
 
-pgdata/
+備註: 支援舊版根目錄的 pgdata 與新版 database/ 內的 pgdata
 
-🌐 離線版瀏覽器與驅動程式 (檔案過大會導致 GitHub 拒絕上傳，請保留在本地即可)
+pgdata/
+database/pgdata/
+
+🌐 離線版瀏覽器與驅動程式 (檔案過大會導致 GitHub 拒絕上傳)
 
 GoogleChromePortable/
 chromedriver-win64/
 
-📂 爬蟲產生的 Excel 報表與日誌
+📂 爬蟲產生的 Excel 報表與日誌 (避免個資與商業機密外流)
 
 electricity_bill_scraper/output/
 electricity_bill_scraper/歷史爬取資料/
 electricity_bill_scraper/merge/
+Energy Report Automation/檢測報告/
 launcher_error.log
+*.log
 pg_postgrey.markdown
 
 🐍 Python 系統快取檔
@@ -25,7 +30,7 @@ pycache/
 *.pyc
 *.pyo
 
-🔨 打包工具產生的暫存檔與執行檔 (Git 只控管原始碼，產出的 exe 不上傳)
+🔨 打包與編譯產生的執行檔 (Git 只控管原始碼，產出的 exe 不上傳)
 
 build/
 dist/

@@ -52,7 +52,7 @@ CREATE TABLE IF NOT EXISTS taipower_scraping_errors (
 
 
 -- ==========================================
--- 💡 新增 4. 感測器 API 執行紀錄表 (系統日誌)
+-- 4. 感測器 API 執行紀錄表 (API 抓取日誌)
 -- ==========================================
 CREATE TABLE IF NOT EXISTS sensor_api_execution_logs (
     id SERIAL PRIMARY KEY,
@@ -62,4 +62,19 @@ CREATE TABLE IF NOT EXISTS sensor_api_execution_logs (
     successful_stores_count INTEGER,        -- 完全成功店家數
     failed_stores_list TEXT,                -- 發生錯誤的店家名單
     executed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP -- 程式執行時間
+);
+
+-- ==========================================
+-- 💡 新增 5. 感測器數據品質檢測日誌表 (斷層與空缺紀錄)
+-- ==========================================
+CREATE TABLE IF NOT EXISTS sensor_data_quality_logs (
+    id SERIAL PRIMARY KEY,
+    check_start_date VARCHAR(20),           -- 檢測區間起點
+    check_end_date VARCHAR(20),             -- 檢測區間終點
+    expected_days INTEGER,                  -- 標準應有天數
+    missing_stores_count INTEGER,           -- 完全無資料之店家數量
+    gap_devices_count INTEGER,              -- 發生斷層之設備數量
+    missing_stores_list TEXT,               -- 完全無資料之店家清單
+    gap_devices_summary TEXT,               -- 斷層設備摘要說明
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP -- 檢測執行時間
 );
