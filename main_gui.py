@@ -9,7 +9,8 @@ import sys
 from core import config
 from core.logger import AppLogger
 from core.process_manager import ProcessManager
-from gui.components import ApiFetchTab, ApiCheckTab, ServerTab, ScraperPanel, ShortcutsPanel
+# 💡 將 AutomationTab 改為 AutomationPanel
+from gui.components import ApiFetchTab, ApiCheckTab, ServerTab, ScraperPanel, ShortcutsPanel, AutomationPanel
 
 class PowerApp(ctk.CTk):
     def __init__(self):
@@ -36,7 +37,8 @@ class PowerApp(ctk.CTk):
         # 3. 版面切割 (Grid)
         self.grid_columnconfigure(0, weight=1)
         self.grid_columnconfigure(1, weight=1)
-        self.grid_rowconfigure(2, weight=1)  
+        # 💡 因為中間多塞了一行，日誌視窗會被擠到第3列，這裡要把自動擴展權重交給第3列
+        self.grid_rowconfigure(3, weight=1)  
 
         # ==========================================
         # 左上方：共用日期區與 API 分頁模組
@@ -63,7 +65,7 @@ class PowerApp(ctk.CTk):
         self.cb_end_m = ctk.CTkComboBox(fe, values=config.MONTHS, width=60); self.cb_end_m.set("06"); self.cb_end_m.pack(side="left", padx=2)
         self.cb_end_d = ctk.CTkComboBox(fe, values=config.DAYS, width=60); self.cb_end_d.set("01"); self.cb_end_d.pack(side="left", padx=2)
 
-        # 裝載三大分頁組件
+        # 裝載三大分頁組件 (注意：這裡已經把舊的自動化分頁拿掉了)
         self.api_tabs = ctk.CTkTabview(frame_api)
         self.api_tabs.pack(pady=5, padx=15, fill="both", expand=True)
         
@@ -83,25 +85,30 @@ class PowerApp(ctk.CTk):
         self.panel_scraper.grid(row=0, column=1, padx=10, pady=10, sticky="nsew")
 
         # ==========================================
-        # 中間：快捷鍵模組
+        # 中間 (1)：🤖 全新獨立的自動化排程總管
+        # ==========================================
+        self.panel_automation = AutomationPanel(self, self.pm)
+        self.panel_automation.grid(row=1, column=0, columnspan=2, padx=10, pady=(0, 10), sticky="nsew")
+
+        # ==========================================
+        # 中間 (2)：快捷鍵模組
         # ==========================================
         self.panel_shortcuts = ShortcutsPanel(self, self.pm)
-        self.panel_shortcuts.grid(row=1, column=0, columnspan=2, padx=10, pady=(0, 10), sticky="nsew")
+        self.panel_shortcuts.grid(row=2, column=0, columnspan=2, padx=10, pady=(0, 10), sticky="nsew")
 
         # ==========================================
         # 底部：日誌視窗與主題切換
         # ==========================================
-        self.log_textbox.grid(row=2, column=0, columnspan=2, padx=10, pady=(0, 5), sticky="nsew")
+        self.log_textbox.grid(row=3, column=0, columnspan=2, padx=10, pady=(0, 5), sticky="nsew")
 
-        ctk.CTkLabel(self, text="© 2026 Developed by HoFireMan\n國立虎尾科技大學 節電團隊", font=ctk.CTkFont(size=12, weight="bold"), text_color="gray").grid(row=3, column=0, padx=15, pady=(5, 10), sticky="w")
+        ctk.CTkLabel(self, text="© 2026 Developed by HoFireMan\n國立虎尾科技大學 節電團隊", font=ctk.CTkFont(size=12, weight="bold"), text_color="gray").grid(row=4, column=0, padx=15, pady=(5, 10), sticky="w")
         
         self.switch_theme = ctk.CTkSwitch(self, text="深色模式 🌙", command=self.toggle_theme, font=ctk.CTkFont(weight="bold"))
         self.switch_theme.select()
-        self.switch_theme.grid(row=3, column=1, padx=15, pady=(5, 10), sticky="e")
+        self.switch_theme.grid(row=4, column=1, padx=15, pady=(5, 10), sticky="e")
 
     # --- 內部事件與方法 ---
     def get_dates(self):
-        """供子分頁調用的全域日期回傳函式"""
         return {
             "start": f"{self.cb_start_y.get()}-{self.cb_start_m.get()}-{self.cb_start_d.get()}",
             "end": f"{self.cb_end_y.get()}-{self.cb_end_m.get()}-{self.cb_end_d.get()}"

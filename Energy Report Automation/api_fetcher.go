@@ -4,11 +4,13 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -24,7 +26,6 @@ import (
 )
 
 // --- 結構體定義 ---
-
 type APIRequestHeader struct {
 	Datetime   string `json:"datetime"`
 	Txcode     string `json:"txcode"`
@@ -46,6 +47,7 @@ type APIRequest struct {
 }
 
 type SensorData struct {
+	BranchCode     string  `json:"branchcode"`
 	BranchName     string  `json:"branchname"`
 	DeviceName     string  `json:"devicename"`
 	DeviceTypeName string  `json:"devicetypename"`
@@ -53,6 +55,7 @@ type SensorData struct {
 	StartTm        string  `json:"starttm"`
 	EndTm          string  `json:"endtm"`
 	Degree         float64 `json:"degree"`
+	DeviceMac      string  `json:"devicemac"` // 💡 新增解析 MAC 欄位
 }
 
 type APIResponse struct {
@@ -62,6 +65,7 @@ type APIResponse struct {
 }
 
 type DBRecord struct {
+	BranchCode     string
 	BranchName     string
 	DeviceName     string
 	DeviceType     string
@@ -71,13 +75,14 @@ type DBRecord struct {
 	Degree         float64
 	DeviceCodeNew  string
 	DeviceType2New string
+	DeviceMac      string // 💡 新增 DB MAC 欄位
 }
 
 // --- 全域常數與變數 ---
 var (
-	httpClient = &http.Client{Timeout: 60 * time.Second}
+	httpClient *http.Client // 💡 改為動態初始化
 	apiUrl     string
-	dbPool     *sql.DB
+	dbPool     *sql.DB // 💡 改為動態初始化
 	mutex      sync.Mutex
 
 	totalProcessed int
@@ -106,7 +111,8 @@ func initEnv() {
 	apiUrl = os.Getenv("API_URL")
 }
 
-func getDBConnection() *sql.DB {
+// 💡 動態依據 Worker 數量調整資料庫連線極限
+func getDBConnection(workers int) *sql.DB {
 	host := os.Getenv("DB_HOST")
 	if strings.ToLower(host) == "localhost" {
 		host = "127.0.0.1"
@@ -124,14 +130,14 @@ func getDBConnection() *sql.DB {
 		log.Fatalf("❌ 資料庫連線失敗: %v", err)
 	}
 
-	db.SetMaxOpenConns(20)
-	db.SetMaxIdleConns(10)
+	// 💡 關鍵解鎖：讓資料庫通道永遠比 Worker 數多一倍，確保絕不塞車！
+	db.SetMaxOpenConns(workers * 2)
+	db.SetMaxIdleConns(workers)
 	db.SetConnMaxLifetime(5 * time.Minute)
 
 	return db
 }
 
-// 輔助功能
 func extractDeviceCode(deviceName string) string {
 	re := regexp.MustCompile(`[A-Za-z0-9]+`)
 	match := re.FindString(deviceName)
@@ -175,7 +181,6 @@ func getDateSegments(startStr, endStr string, step int) [][2]string {
 	return segments
 }
 
-// 批次寫入資料庫
 func processAndInsertData(rawData []SensorData, branchCode string) (int, error) {
 	if len(rawData) == 0 {
 		return 0, nil
@@ -193,9 +198,15 @@ func processAndInsertData(rawData []SensorData, branchCode string) (int, error) 
 			bName = branchCode
 		}
 
+		bCode := raw.BranchCode
+		if bCode == "" {
+			bCode = branchCode
+		}
+
 		dateOnly := strings.Split(raw.ReportDate, "T")[0]
 
 		record := DBRecord{
+			BranchCode:     bCode,
 			BranchName:     bName,
 			DeviceName:     devName,
 			DeviceType:     raw.DeviceTypeName,
@@ -205,6 +216,7 @@ func processAndInsertData(rawData []SensorData, branchCode string) (int, error) 
 			Degree:         raw.Degree,
 			DeviceCodeNew:  extractDeviceCode(devName),
 			DeviceType2New: extractFurnitureType(devName, raw.DeviceTypeName),
+			DeviceMac:      raw.DeviceMac, // 💡 綁定 API 傳來的 MAC
 		}
 		records = append(records, record)
 	}
@@ -213,35 +225,54 @@ func processAndInsertData(rawData []SensorData, branchCode string) (int, error) 
 		return 0, nil
 	}
 
-	valueStrings := make([]string, 0, len(records))
-	valueArgs := make([]interface{}, 0, len(records)*9)
+	// 💡 批次寫入切片 (Chunking)，防禦 65535 參數極限
+	const batchSize = 3000
+	totalInserted := 0
 
-	i := 1
-	for _, rec := range records {
-		valueStrings = append(valueStrings, fmt.Sprintf("($%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d)",
-			i, i+1, i+2, i+3, i+4, i+5, i+6, i+7, i+8))
-		valueArgs = append(valueArgs, rec.BranchName, rec.DeviceName, rec.DeviceType,
-			rec.ReportDate, rec.StartTime, rec.EndTime, rec.Degree, rec.DeviceCodeNew, rec.DeviceType2New)
-		i += 9
+	for i := 0; i < len(records); i += batchSize {
+		end := i + batchSize
+		if end > len(records) {
+			end = len(records)
+		}
+
+		batch := records[i:end]
+		valueStrings := make([]string, 0, len(batch))
+		valueArgs := make([]interface{}, 0, len(batch)*10)
+
+		paramIndex := 1
+		for _, rec := range batch {
+			valueStrings = append(valueStrings, fmt.Sprintf("($%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d)",
+				paramIndex, paramIndex+1, paramIndex+2, paramIndex+3, paramIndex+4, paramIndex+5, paramIndex+6, paramIndex+7, paramIndex+8, paramIndex+9, paramIndex+10))
+			valueArgs = append(valueArgs, rec.BranchCode, rec.BranchName, rec.DeviceName, rec.DeviceType,
+				rec.ReportDate, rec.StartTime, rec.EndTime, rec.Degree, rec.DeviceCodeNew, rec.DeviceType2New, rec.DeviceMac)
+			paramIndex += 11
+		}
+
+		// 💡 修正：將 ON CONFLICT 對齊唯一的 device_mac，確保硬體 ID 絕對唯一，並自動更新其它欄位！
+		query := fmt.Sprintf(`
+			INSERT INTO power_consumption_records (
+				branch_code, branch_name, device_name, device_type, report_date, 
+				start_time, end_time, degree, device_code_new, device_type_2_new, device_mac
+			) VALUES %s
+			ON CONFLICT (branch_code, device_mac, report_date, start_time) 
+			DO UPDATE SET 
+				device_name = EXCLUDED.device_name,
+				device_type = EXCLUDED.device_type,
+				device_type_2_new = EXCLUDED.device_type_2_new,
+				device_code_new = EXCLUDED.device_code_new;
+		`, strings.Join(valueStrings, ","))
+
+		_, err := dbPool.Exec(query, valueArgs...)
+		if err != nil {
+			return totalInserted, fmt.Errorf("DB Batch Insert Error: %v", err)
+		}
+
+		totalInserted += len(batch)
 	}
 
-	query := fmt.Sprintf(`
-		INSERT INTO power_consumption_records (
-			branch_name, device_name, device_type, report_date, 
-			start_time, end_time, degree, device_code_new, device_type_2_new
-		) VALUES %s
-		ON CONFLICT (branch_name, device_name, report_date, start_time) DO NOTHING;
-	`, strings.Join(valueStrings, ","))
-
-	_, err := dbPool.Exec(query, valueArgs...)
-	if err != nil {
-		return 0, fmt.Errorf("DB Batch Insert Error: %v", err)
-	}
-
-	return len(records), nil
+	return totalInserted, nil
 }
 
-// 遞迴降級重試抓取函數
 func fetchSegmentWithFallback(branchCode, startStr, endStr string, step int) (int, bool) {
 	reqBody := APIRequest{
 		Header: APIRequestHeader{
@@ -365,27 +396,24 @@ func saveApiExecutionLog(startStr, endStr string, totalStores, successCount int,
 
 func main() {
 	initEnv()
-	dbPool = getDBConnection()
-	defer dbPool.Close()
 
 	var startTotal, endTotal string
 	var stepDays, maxWorkers int
 	var targetBranchesArg string
 
+	// 1. 先解析傳入的參數，因為我們需要知道 maxWorkers
 	if len(os.Args) >= 5 {
 		startTotal = os.Args[1]
 		endTotal = os.Args[2]
 		stepDays, _ = strconv.Atoi(os.Args[3])
 		maxWorkers, _ = strconv.Atoi(os.Args[4])
 
-		// 💡 解析第五個參數：特定店家名單
 		if len(os.Args) >= 6 {
 			targetBranchesArg = os.Args[5]
 		} else {
 			targetBranchesArg = "ALL"
 		}
 	} else {
-		// 開發時直接測試的防呆提示
 		reader := bufio.NewReader(os.Stdin)
 		fmt.Print("請輸入起始日期 (YYYY-MM-DD) [預設: 2020-05-20]: ")
 		inStart, _ := reader.ReadString('\n')
@@ -410,9 +438,35 @@ func main() {
 		targetBranchesArg = "ALL"
 	}
 
+	// 2. 💡 根據解析出的 maxWorkers，動態解鎖網路隧道與資料庫連線池！
+	httpClient = &http.Client{
+		Timeout: 60 * time.Second,
+		Transport: &http.Transport{
+			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+				if network == "tcp" {
+					network = "tcp4" // 強制轉換為 IPv4
+				}
+				dialer := &net.Dialer{
+					Timeout:   30 * time.Second,
+					KeepAlive: 30 * time.Second,
+				}
+				return dialer.DialContext(ctx, network, addr)
+			},
+			ForceAttemptHTTP2:     true,
+			MaxIdleConns:          maxWorkers * 2, // 動態擴展
+			MaxIdleConnsPerHost:   maxWorkers * 2, // 動態擴展
+			MaxConnsPerHost:       maxWorkers * 2, // 動態擴展
+			IdleConnTimeout:       90 * time.Second,
+			TLSHandshakeTimeout:   10 * time.Second,
+			ExpectContinueTimeout: 1 * time.Second,
+		},
+	}
+
+	dbPool = getDBConnection(maxWorkers)
+	defer dbPool.Close()
+
 	startTimeExec := time.Now()
 
-	// 💡 智能判斷模式：指定店家 vs 讀取全部 Excel
 	var targetBranches []string
 	if targetBranchesArg != "ALL" && targetBranchesArg != "" {
 		parts := strings.Split(targetBranchesArg, ",")
@@ -474,22 +528,21 @@ func main() {
 					failedBranches[t.Branch] = true
 				}
 
-				// 💡 進度條繪製邏輯
 				completedTasks++
-				percent := float64(completedTasks) / float64(totalTasks) * 100
+				currentCompleted := completedTasks // 把數字拷貝出來
+				mutex.Unlock()                     // 馬上解鎖，讓其他執行緒不用排隊
+
+				// 將超慢的 Console I/O 移出鎖定區
+				percent := float64(currentCompleted) / float64(totalTasks) * 100
 				barLength := 30
-				filled := int(float64(barLength) * float64(completedTasks) / float64(totalTasks))
+				filled := int(float64(barLength) * float64(currentCompleted) / float64(totalTasks))
 				if filled > barLength {
 					filled = barLength
 				}
-				// 產生動態長度的 █ 方塊
 				bar := strings.Repeat("█", filled) + strings.Repeat(" ", barLength-filled)
 				elapsed := time.Since(startTimeExec).Truncate(time.Second)
 
-				// 輸出給 UI 的特殊格式 (UI 會攔截這個格式做單行原地覆蓋)
-				fmt.Printf("總進度: %3.0f%%|%s| %d/%d [耗時: %s]\n", percent, bar, completedTasks, totalTasks, elapsed)
-
-				mutex.Unlock()
+				fmt.Printf("總進度: %3.0f%%|%s| %d/%d [耗時: %s]\n", percent, bar, currentCompleted, totalTasks, elapsed)
 			}
 		}()
 	}

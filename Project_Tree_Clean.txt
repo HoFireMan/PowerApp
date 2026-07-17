@@ -1,0 +1,48 @@
+Power App/
+├── core
+│   ├── config.py
+│   ├── logger.py
+│   └── process_manager.py
+├── electricity_bill_scraper
+│   ├── merge
+│   │   └── 合併結果_20260616_1655.xlsx
+│   ├── output
+│   │   ├── 爬取結果_20260614_1641.xlsx
+│   │   ├── 爬取結果_20260616_1410.xlsx
+│   │   └── 爬取結果_20260618_0215.xlsx
+│   ├── 歷史爬取資料
+│   ├── accounts.csv
+│   ├── chromedriver.exe
+│   ├── electricity_bill_scraper_v3.py
+│   └── merge_excel_files.py
+├── Energy Report Automation
+│   ├── 檢測報告
+│   │   ├── 數據空缺檢測報告_20260711_164930.xlsx
+│   │   ├── 數據空缺檢測報告_20260711_223506.xlsx
+│   │   ├── 數據空缺檢測報告_20260712_232710.xlsx
+│   │   ├── 數據空缺檢測報告_20260712_233809.xlsx
+│   │   └── 數據空缺檢測報告_20260713_142813.xlsx
+│   ├── api_fetcher.exe
+│   ├── api_fetcher.go
+│   ├── data_checker.exe
+│   ├── data_checker.go
+│   ├── go.mod
+│   ├── go.sum
+│   └── 店家ID.xlsx
+├── gui
+│   └── components.py
+├── .env
+├── .env.example
+├── .gitignore
+├── App icon.png
+├── App.ico
+├── auto_pipeline.py
+├── generate_tree.py
+├── launcher.py
+├── main_gui.py
+├── README.md
+├── requirements.txt
+├── run_pipeline_hidden.bat
+├── version_info.txt
+├── 能源管理中控台.exe
+└── 自動安裝環境.bat

@@ -337,3 +337,87 @@ class ShortcutsPanel(ctk.CTkFrame):
             driver_path = os.path.join(os.environ.get('APPDATA', ''), 'undetected_chromedriver')
             if not os.path.exists(driver_path): os.makedirs(driver_path, exist_ok=True)
             self.open_path(driver_path)
+
+
+# ==========================================
+# 全新獨立的自動化排程總管介面 (獨立區塊，彰顯全域控制權)
+# ==========================================
+class AutomationPanel(ctk.CTkFrame):
+    def __init__(self, master, process_manager):
+        super().__init__(master) # 這裡不用透明背景，讓它有一個實體的方塊感
+        self.pm = process_manager
+        
+        # --- UI 建構 ---
+        lbl_title = ctk.CTkLabel(self, text="🤖 系統全自動排程總管", font=ctk.CTkFont(size=16, weight="bold"))
+        lbl_title.pack(pady=(10, 5))
+        
+        lbl_desc = ctk.CTkLabel(self, text="將全套流程註冊至 Windows 排程器。每月指定時間將自動在背景無人值守執行：\n【API 抓取 ➔ 檢測補零 ➔ 台電帳單爬蟲】", justify="center", text_color="gray")
+        lbl_desc.pack(pady=(0, 10))
+
+        ctrl_frame = ctk.CTkFrame(self, fg_color="transparent")
+        ctrl_frame.pack(pady=5)
+        
+        ctk.CTkLabel(ctrl_frame, text="每月自動啟動時間:").pack(side="left", padx=5)
+        
+        self.cb_day = ctk.CTkComboBox(ctrl_frame, values=[str(i) for i in range(1, 29)], width=60)
+        self.cb_day.set("1")
+        self.cb_day.pack(side="left")
+        
+        ctk.CTkLabel(ctrl_frame, text="號  00:05").pack(side="left", padx=5)
+        
+        btn_frame = ctk.CTkFrame(self, fg_color="transparent")
+        btn_frame.pack(pady=(5, 10))
+        
+        self.btn_register = ctk.CTkButton(btn_frame, text="📅 註冊至系統排程", command=self.register_task, fg_color="#28a745", hover_color="#218838")
+        self.btn_register.pack(side="left", padx=10)
+        
+        self.btn_remove = ctk.CTkButton(btn_frame, text="🗑️ 移除自動排程", command=self.remove_task, fg_color="#dc3545", hover_color="#c82333")
+        self.btn_remove.pack(side="left", padx=10)
+        
+        self.btn_test = ctk.CTkButton(btn_frame, text="🚀 立即手動測試全流程", command=self.run_pipeline_now, fg_color="#17a2b8", hover_color="#138496")
+        self.btn_test.pack(side="left", padx=10)
+
+        # 💡 新增：終止測試按鈕
+        self.btn_stop_test = ctk.CTkButton(btn_frame, text="⏹️ 終止測試", command=self.stop_pipeline_now, fg_color="#dc3545", hover_color="#c82333", state="disabled")
+        self.btn_stop_test.pack(side="left", padx=10)
+
+    def register_task(self):
+        day = self.cb_day.get()
+        script_path = os.path.join(config.BASE_DIR, "auto_pipeline.py")
+        
+        # 建立執行 bat (包裝 python 指令與不顯示黑框的邏輯)
+        bat_path = os.path.join(config.BASE_DIR, "run_pipeline_hidden.bat")
+        with open(bat_path, "w", encoding="utf-8") as f:
+            f.write(f'@echo off\n"{sys.executable}" "{script_path}"\n')
+
+        # 💡 修改排程器啟動時間為凌晨 00:05
+        cmd = f'schtasks /create /tn "PowerApp_Monthly_Auto" /tr "{bat_path}" /sc monthly /d {day} /st 00:05 /f'
+        
+        try:
+            subprocess.run(cmd, shell=True, check=True, capture_output=True)
+            self.pm.logger.log(f"✅ 成功將自動化排程註冊至 Windows！\n系統將於每月 {day} 號凌晨 00:05 自動在背景執行完整任務。")
+        except Exception as e:
+            self.pm.logger.log(f"❌ 註冊排程失敗 (請確認是否以系統管理員身分執行): {e}")
+
+    def remove_task(self):
+        cmd = 'schtasks /delete /tn "PowerApp_Monthly_Auto" /f'
+        try:
+            subprocess.run(cmd, shell=True, check=True, capture_output=True)
+            self.pm.logger.log("✅ 成功移除 Windows 背景排程任務！")
+        except:
+            self.pm.logger.log("⚠️ 移除失敗，或是該排程本來就不存在。")
+
+    def run_pipeline_now(self):
+        script_path = os.path.join(config.BASE_DIR, "auto_pipeline.py")
+        if os.path.exists(script_path):
+            self.pm.run_script_in_thread(
+                script_path, config.BASE_DIR, [], "pipeline",
+                on_start=lambda: (self.btn_test.configure(state="disabled"), self.btn_stop_test.configure(state="normal")),
+                on_finish=lambda: (self.btn_test.configure(state="normal"), self.btn_stop_test.configure(state="disabled"))
+            )
+        else:
+            self.pm.logger.log(f"❌ 找不到整合腳本: {script_path}")
+
+    # 💡 新增：強制終止排程腳本的邏輯
+    def stop_pipeline_now(self):
+        self.pm.stop_process("pipeline")

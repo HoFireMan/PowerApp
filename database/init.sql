@@ -3,7 +3,8 @@
 -- ==========================================
 CREATE TABLE IF NOT EXISTS power_consumption_records (
     id SERIAL PRIMARY KEY,
-    branch_name VARCHAR(255) NOT NULL,
+    branch_code VARCHAR(100),               -- 💡 新增：精準的店家代碼 (如 ant10)
+    branch_name VARCHAR(255) NOT NULL,      -- 用於 Tableau 顯示的中文店名
     device_name VARCHAR(255) NOT NULL,
     device_type VARCHAR(100),
     report_date DATE NOT NULL,
@@ -12,10 +13,12 @@ CREATE TABLE IF NOT EXISTS power_consumption_records (
     degree NUMERIC(10, 4),
     device_code_new VARCHAR(100),
     device_type_2_new VARCHAR(100),
-    CONSTRAINT unique_record UNIQUE (branch_name, device_name, report_date, start_time)
+    device_mac VARCHAR(100),                -- 💡 新增：實體硬體 MAC 位址 (終極唯一碼)
+    -- 💡 防呆限制升級：改用 branch_code 與 device_mac 作為終極基準 (徹底消滅幽靈設備)
+    CONSTRAINT unique_record UNIQUE (branch_code, device_mac, report_date, start_time)
 );
 
-CREATE INDEX IF NOT EXISTS idx_branch_name ON power_consumption_records(branch_name);
+CREATE INDEX IF NOT EXISTS idx_branch_code ON power_consumption_records(branch_code);
 CREATE INDEX IF NOT EXISTS idx_report_date ON power_consumption_records(report_date);
 
 
@@ -78,3 +81,21 @@ CREATE TABLE IF NOT EXISTS sensor_data_quality_logs (
     gap_devices_summary TEXT,               -- 斷層設備摘要說明
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP -- 檢測執行時間
 );
+
+-- ==========================================
+-- 6. 感測器數據品質檢測 - 店家關聯映射表 (專供 Tableau 高速篩選)
+-- ==========================================
+CREATE TABLE IF NOT EXISTS sensor_data_quality_logs_mapping (
+    id SERIAL PRIMARY KEY,
+    log_id INTEGER,                         -- 對應到主表的 ID
+    branch_code VARCHAR(100),               -- 店家代號 (如 ant14)
+    branch_name VARCHAR(255),               -- 店家名稱
+    issue_type VARCHAR(50),                 -- 異常類型 ('完全空缺' 或 '設備斷層')
+    device_name VARCHAR(255),               -- 💡 新增：發生異常的設備名稱
+    device_mac VARCHAR(100),                -- 💡 新增：硬體 MAC
+    offline_days INTEGER                    -- 💡 新增：斷線天數
+);
+
+-- 建立索引，讓 Tableau 篩選速度飛快 ⚡
+CREATE INDEX IF NOT EXISTS idx_mapping_log_id ON sensor_data_quality_logs_mapping(log_id);
+CREATE INDEX IF NOT EXISTS idx_mapping_branch_code ON sensor_data_quality_logs_mapping(branch_code);

@@ -6,32 +6,40 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/joho/godotenv"
+	"github.com/lib/pq"
 	_ "github.com/lib/pq"
 	"github.com/xuri/excelize/v2"
 )
 
-var (
-	dbPool *sql.DB
-)
-
+// GapDevice 定義斷層設備的結構
 type GapDevice struct {
-	BranchID       string
-	BranchName     string
-	DeviceName     string
-	ExpectedDays   int
-	ReportedDays   int
-	MissingDays    int
-	LastReportDate string
+	BranchID         string
+	BranchName       string
+	DeviceCode       string
+	DeviceName       string
+	FirstInstallDate string
+	ExpectedDays     int
+	ReportedDays     int
+	MissingDays      int
+	LastReportDate   string
+	OfflineDays      int
+	DeviceMac        string // 💡 依賴硬體 MAC 進行身分辨識
 }
 
+var dbPool *sql.DB
+
 func initEnv() {
-	ex, _ := os.Executable()
+	ex, err := os.Executable()
+	if err != nil {
+		panic(err)
+	}
 	exPath := filepath.Dir(ex)
 	if strings.Contains(exPath, "go-build") || strings.Contains(exPath, "Temp") {
 		exPath, _ = os.Getwd()
@@ -57,161 +65,167 @@ func getDBConnection() *sql.DB {
 	if err != nil {
 		log.Fatalf("❌ 資料庫連線失敗: %v", err)
 	}
+	db.SetMaxOpenConns(10)
+	db.SetMaxIdleConns(5)
 	return db
 }
 
-func readStoreInfo(filePath string) (map[string]string, error) {
-	f, err := excelize.OpenFile(filePath)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
+func saveCheckLogToDB(startStr, endStr string, expectedDays int, missingIds []string, gapDevices []GapDevice, missingListStr, gapSummaryStr string, storeDisplay map[string]string) {
+	fmt.Printf("\n🐳 系統：準備將本次檢測報告同步寫入資料庫...\n")
 
-	rows, err := f.GetRows("店家資訊")
-	if err != nil {
-		return nil, err
-	}
-
-	if len(rows) == 0 {
-		return nil, fmt.Errorf("找不到資料")
-	}
-
-	idIdx, nameIdx := -1, -1
-	for i, col := range rows[0] {
-		lowerCol := strings.ToLower(strings.TrimSpace(col))
-		if lowerCol == "id" {
-			idIdx = i
-		} else if strings.Contains(lowerCol, "name") || strings.Contains(lowerCol, "名") {
-			nameIdx = i
-		}
-	}
-
-	if idIdx == -1 {
-		return nil, fmt.Errorf("找不到 ID 欄位")
-	}
-	if nameIdx == -1 {
-		nameIdx = idIdx + 1 // 猜測下一個是店名
-	}
-
-	storeMap := make(map[string]string)
-	for _, row := range rows[1:] {
-		if len(row) > idIdx {
-			id := strings.TrimSpace(row[idIdx])
-			if id != "" && id != "nan" {
-				name := ""
-				if len(row) > nameIdx {
-					name = strings.TrimSpace(row[nameIdx])
-				}
-				storeMap[id] = name
-			}
-		}
-	}
-	return storeMap, nil
-}
-
-func saveCheckLogToDB(startStr, endStr string, expectedDays int, missingIds []string, gapDevices []GapDevice, storeMap map[string]string) {
-	var missingStrs []string
-	for _, id := range missingIds {
-		if name, ok := storeMap[id]; ok && name != "" {
-			missingStrs = append(missingStrs, fmt.Sprintf("%s-%s", id, name))
-		} else {
-			missingStrs = append(missingStrs, id)
-		}
-	}
-	missingList := "無"
-	if len(missingStrs) > 0 {
-		missingList = strings.Join(missingStrs, ", ")
-	}
-
-	var gapSummaryStrs []string
-	limit := len(gapDevices)
-	if limit > 20 {
-		limit = 20
-	}
-	for i := 0; i < limit; i++ {
-		gd := gapDevices[i]
-		gapSummaryStrs = append(gapSummaryStrs, fmt.Sprintf("%s-%s(缺%d天)", gd.BranchName, gd.DeviceName, gd.MissingDays))
-	}
-	gapSummary := "資料完整無斷層"
-	if len(gapSummaryStrs) > 0 {
-		gapSummary = strings.Join(gapSummaryStrs, ", ")
-		if len(gapDevices) > 20 {
-			gapSummary += fmt.Sprintf(" ...等共 %d 項設備異常", len(gapDevices))
-		}
-	}
-
-	query := `
-		INSERT INTO sensor_data_quality_logs (
-			check_start_date, check_end_date, expected_days, 
-			missing_stores_count, gap_devices_count, missing_stores_list, gap_devices_summary
-		) VALUES ($1, $2, $3, $4, $5, $6, $7);
+	// 確保主表與關聯映射表都存在
+	createTableQuery := `
+    CREATE TABLE IF NOT EXISTS sensor_data_quality_logs (
+        id SERIAL PRIMARY KEY,
+        check_start_date VARCHAR(20),
+        check_end_date VARCHAR(20),
+        expected_days INTEGER,
+        missing_stores_count INTEGER,
+        gap_devices_count INTEGER,
+        missing_stores_list TEXT,
+        gap_devices_summary TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+	CREATE TABLE IF NOT EXISTS sensor_data_quality_logs_mapping (
+		id SERIAL PRIMARY KEY,
+		log_id INTEGER,                         
+		branch_code VARCHAR(100),               
+		branch_name VARCHAR(255),               
+		issue_type VARCHAR(50)                  
+	);
 	`
-	_, err := dbPool.Exec(query, startStr, endStr, expectedDays, len(missingIds), len(gapDevices), missingList, gapSummary)
+	dbPool.Exec(createTableQuery)
+
+	// 1. 寫入主日誌表，並取得 log_id
+	insertMainQuery := `
+        INSERT INTO sensor_data_quality_logs (
+            check_start_date, check_end_date, expected_days, 
+            missing_stores_count, gap_devices_count, missing_stores_list, gap_devices_summary
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id;
+    `
+
+	var logID int
+	err := dbPool.QueryRow(insertMainQuery, startStr, endStr, expectedDays, len(missingIds), len(gapDevices), missingListStr, gapSummaryStr).Scan(&logID)
+
 	if err != nil {
-		fmt.Printf("\n    ❌ 檢測報告寫入資料庫失敗: %v\n", err)
-	} else {
-		fmt.Println("\n    ✅ 檢測報告同步寫入資料庫成功！")
-	}
-}
-
-func performAutoFixZeroFill(startStr, endStr string, branchesToFix []string, storeMap map[string]string) {
-	fmt.Println("\n========================================")
-	fmt.Printf("🛠️ 啟動自動修復：SQL 交叉比對精準補 0 (共 %d 家店家)\n", len(branchesToFix))
-	fmt.Println("========================================")
-
-	var searchNames []string
-	for _, id := range branchesToFix {
-		searchNames = append(searchNames, id)
-		if name, ok := storeMap[id]; ok && name != "" {
-			searchNames = append(searchNames, name)
-		}
-	}
-
-	// 將 string slice 轉成 PostgreSQL 陣列格式字串
-	pgArrayStr := "{" + strings.Join(searchNames, ",") + "}"
-
-	fillZeroQuery := `
-        WITH date_series AS (
-            SELECT generate_series($1::date, $2::date - interval '1 day', '1 day')::date AS expected_date
-        ),
-        existing_devices AS (
-            SELECT DISTINCT branch_name, device_name, device_type, device_code_new, device_type_2_new 
-            FROM power_consumption_records 
-            WHERE branch_name = ANY($3::varchar[])
-        ),
-        expected_records AS (
-            SELECT d.expected_date, e.branch_name, e.device_name, e.device_type, e.device_code_new, e.device_type_2_new
-            FROM date_series d CROSS JOIN existing_devices e
-        ),
-        actual_records AS (
-            SELECT DISTINCT report_date, branch_name, device_name
-            FROM power_consumption_records
-            WHERE report_date >= $1 AND report_date < $2
-            AND branch_name = ANY($3::varchar[])
-        )
-        INSERT INTO power_consumption_records (
-            branch_name, device_name, device_type, report_date, start_time, end_time, degree, device_code_new, device_type_2_new
-        )
-        SELECT 
-            e.branch_name, e.device_name, e.device_type, e.expected_date, 
-            '00:00:00'::time, '23:59:59'::time, 0, e.device_code_new, e.device_type_2_new
-        FROM expected_records e
-        LEFT JOIN actual_records a 
-          ON e.expected_date = a.report_date 
-         AND e.branch_name = a.branch_name 
-         AND e.device_name = a.device_name
-        WHERE a.report_date IS NULL
-        ON CONFLICT (branch_name, device_name, report_date, start_time) DO NOTHING;
-	`
-
-	res, err := dbPool.Exec(fillZeroQuery, startStr, endStr, pgArrayStr)
-	if err != nil {
-		fmt.Printf("❌ 執行補零程序時發生錯誤: %v\n", err)
+		fmt.Printf("    ❌ 檢測主報告寫入失敗: %v\n", err)
 		return
 	}
 
-	rowsAffected, _ := res.RowsAffected()
-	fmt.Printf("✅ [階段完成] 成功為斷層設備精準補上 %d 筆 [0度] 紀錄！\n", rowsAffected)
+	// 2. 將出事的店家逐筆寫入「映射表」供 Tableau 極速篩選
+	insertMappingQuery := `
+		INSERT INTO sensor_data_quality_logs_mapping (log_id, branch_code, branch_name, issue_type)
+		VALUES ($1, $2, $3, $4)
+	`
+	mappingCount := 0
+
+	for _, mid := range missingIds {
+		display := storeDisplay[mid]
+		_, err := dbPool.Exec(insertMappingQuery, logID, mid, display, "完全空缺")
+		if err == nil {
+			mappingCount++
+		}
+	}
+
+	gapStoresHandled := make(map[string]bool)
+	for _, gd := range gapDevices {
+		if !gapStoresHandled[gd.BranchID] {
+			_, err := dbPool.Exec(insertMappingQuery, logID, gd.BranchID, gd.BranchName, "設備斷層")
+			if err == nil {
+				mappingCount++
+				gapStoresHandled[gd.BranchID] = true
+			}
+		}
+	}
+
+	fmt.Printf("    ✅ 檢測報告寫入成功！(主紀錄 1 筆，關聯映射 %d 筆)\n", mappingCount)
+}
+
+func performAutoFix(startStr, endStr string, missingBranches []string) {
+	fmt.Println("\n========================================")
+	fmt.Printf("🛠️ 啟動自動修復程序 (共需修復 %d 家店家)\n", len(missingBranches))
+	fmt.Println("========================================")
+
+	// 階段 1：嘗試透過 API 重新抓取
+	fmt.Println("⏳ [階段 1] 正在向伺服器發送 API 請求嘗試補抓...")
+	ex, _ := os.Executable()
+	exPath := filepath.Dir(ex)
+	if strings.Contains(exPath, "go-build") || strings.Contains(exPath, "Temp") {
+		exPath, _ = os.Getwd()
+	}
+	apiFetcherExe := filepath.Join(exPath, "api_fetcher.exe")
+
+	if _, err := os.Stat(apiFetcherExe); err == nil {
+		branchesArg := strings.Join(missingBranches, ",")
+
+		// 💡 終極防漏優化：7 天一包、5 核心慢速精準補抓，杜絕 API 假性成功漏資料！
+		cmd := exec.Command(apiFetcherExe, startStr, endStr, "7", "5", branchesArg)
+
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		err := cmd.Run()
+		if err != nil {
+			fmt.Printf("⚠️ 呼叫 api_fetcher 失敗: %v\n", err)
+		} else {
+			fmt.Println("✅ [階段 1 完成] API 精準補抓程序執行完畢。")
+		}
+	} else {
+		fmt.Println("⚠️ 找不到 api_fetcher.exe，跳過 API 補抓階段。")
+	}
+
+	// 階段 2：針對空缺日子精準補零
+	fmt.Println("\n⏳ [階段 2] 正在進行 SQL 交叉比對，針對絕對斷層補上 0 度紀錄...")
+
+	fillZeroQuery := `
+    WITH date_series AS (
+        SELECT generate_series($1::date, $2::date - interval '1 day', '1 day')::date AS expected_date
+    ),
+    existing_devices AS (
+        SELECT branch_code, device_mac, 
+               MAX(device_code_new) as device_code_new, 
+               MAX(branch_name) as branch_name, 
+               MAX(device_name) as device_name, 
+               MAX(device_type) as device_type, 
+               MAX(device_type_2_new) as device_type_2_new,
+               MIN(report_date) as first_install_date 
+        FROM power_consumption_records 
+        WHERE branch_code = ANY($3)
+        GROUP BY branch_code, device_mac
+    ),
+    expected_records AS (
+        SELECT d.expected_date, e.branch_code, e.branch_name, e.device_name, e.device_type, e.device_code_new, e.device_type_2_new, e.device_mac
+        FROM date_series d CROSS JOIN existing_devices e
+        WHERE d.expected_date >= e.first_install_date
+    ),
+    actual_records AS (
+        SELECT DISTINCT report_date, branch_code, device_mac
+        FROM power_consumption_records
+        WHERE report_date >= $1 AND report_date < $2
+        AND branch_code = ANY($3)
+    )
+    INSERT INTO power_consumption_records (
+        branch_code, branch_name, device_name, device_type, report_date, start_time, end_time, degree, device_code_new, device_type_2_new, device_mac
+    )
+    SELECT 
+        e.branch_code, e.branch_name, e.device_name, e.device_type, e.expected_date, 
+        '00:00:00'::time, '23:59:59'::time, 0, e.device_code_new, e.device_type_2_new, e.device_mac
+    FROM expected_records e
+    LEFT JOIN actual_records a 
+      ON e.expected_date = a.report_date 
+     AND e.branch_code = a.branch_code 
+     AND e.device_mac = a.device_mac
+    WHERE a.report_date IS NULL
+    ON CONFLICT (branch_code, device_mac, report_date, start_time) DO NOTHING;
+    `
+
+	res, err := dbPool.Exec(fillZeroQuery, startStr, endStr, pq.Array(missingBranches))
+	if err != nil {
+		fmt.Printf("❌ 執行補零程序時發生錯誤: %v\n", err)
+	} else {
+		rowsAffected, _ := res.RowsAffected()
+		fmt.Printf("✅ [階段 2 完成] 成功為斷層設備精準補上 %d 筆 [0度] 紀錄！\n", rowsAffected)
+		fmt.Println("💡 註：系統已啟動防呆過濾，設備「安裝前」的空白日將不予補零。")
+	}
 }
 
 func main() {
@@ -219,213 +233,328 @@ func main() {
 	dbPool = getDBConnection()
 	defer dbPool.Close()
 
-	var startTotal, endTotal, autoFix string
+	startTotal := "ALL"
+	endTotal := "ALL"
+	autoFixFlag := "no_fix"
+
 	if len(os.Args) >= 4 {
 		startTotal = os.Args[1]
 		endTotal = os.Args[2]
-		autoFix = os.Args[3]
-	} else {
-		startTotal = "ALL"
-		endTotal = "ALL"
-		autoFix = "no_fix"
+		autoFixFlag = os.Args[3]
 	}
 
-	fmt.Println("=== 啟動感測器數據空缺檢測 ===")
+	fmt.Println("=== 啟動感測器數據空缺檢測 (即時健康監控版) ===")
 
 	if startTotal == "ALL" {
 		fmt.Println("🔍 啟動全時段掃描：正在計算資料庫最早期與最新紀錄...")
-		var minDate, maxDate string
-		err := dbPool.QueryRow("SELECT MIN(report_date)::text, MAX(report_date)::text FROM power_consumption_records").Scan(&minDate, &maxDate)
-		if err != nil || minDate == "" {
+		var minDate, maxDate time.Time
+		err := dbPool.QueryRow("SELECT MIN(report_date), MAX(report_date) FROM power_consumption_records").Scan(&minDate, &maxDate)
+		if err == nil && !minDate.IsZero() && !maxDate.IsZero() {
+			startTotal = minDate.Format("2006-01-02")
+			endTotal = maxDate.AddDate(0, 0, 1).Format("2006-01-02")
+		} else {
 			log.Fatalf("❌ 資料庫目前無任何資料，無法執行全時段檢測。")
 		}
-		
-		tMin, _ := time.Parse("2006-01-02", minDate[:10])
-		tMax, _ := time.Parse("2006-01-02", maxDate[:10])
-		
-		startTotal = tMin.Format("2006-01-02")
-		endTotal = tMax.AddDate(0, 0, 1).Format("2006-01-02") // 包含尾日
 	}
 
-	layout := "2006-01-02"
-	startDt, _ := time.Parse(layout, startTotal)
-	endDt, _ := time.Parse(layout, endTotal)
-	expectedDays := int(endDt.Sub(startDt).Hours() / 24)
+	startDt, _ := time.Parse("2006-01-02", startTotal)
+	endDt, _ := time.Parse("2006-01-02", endTotal)
+	expectedTotalDays := int(endDt.Sub(startDt).Hours() / 24)
 
-	fmt.Printf("📅 檢測區間: %s 至 %s (應有天數: %d 天)\n\n", startTotal, endTotal, expectedDays)
+	fmt.Printf("📅 檢測區間: %s 至 %s (查詢跨度: %d 天)\n\n", startTotal, endTotal, expectedTotalDays)
 
-	// 讀取 Excel 店家 ID
-	exPath, _ := os.Getwd()
+	ex, _ := os.Executable()
+	exPath := filepath.Dir(ex)
 	if strings.Contains(exPath, "go-build") || strings.Contains(exPath, "Temp") {
-		exPath = filepath.Dir(os.Args[0])
+		exPath, _ = os.Getwd()
 	}
 	excelPath := filepath.Join(exPath, "店家ID.xlsx")
-	storeMap, err := readStoreInfo(excelPath)
+
+	f, err := excelize.OpenFile(excelPath)
 	if err != nil {
 		log.Fatalf("❌ 讀取 店家ID.xlsx 失敗: %v", err)
 	}
-	
-	// 建立反向對照表 Name -> ID
-	nameToID := make(map[string]string)
-	for id, name := range storeMap {
-		if name != "" {
-			nameToID[name] = id
-		}
-		nameToID[id] = id // 確保 ID 也能查到 ID
+	defer f.Close()
+
+	rows, err := f.GetRows("店家資訊")
+	if err != nil || len(rows) < 2 {
+		log.Fatalf("❌ 讀取 Excel 失敗，找不到資料。")
 	}
 
-	// 查詢資料庫
-	fmt.Println("⏳ 正在比對數百萬筆資料，請稍候...")
+	headerRow := rows[0]
+	idColIdx, nameColIdx := -1, -1
+	for i, colCell := range headerRow {
+		colStr := strings.TrimSpace(strings.ToLower(colCell))
+		if colStr == "id" {
+			idColIdx = i
+		} else if colStr == "name" || colStr == "店名" || colStr == "店家名稱" || colStr == "公司名稱" {
+			nameColIdx = i
+		}
+	}
+	if nameColIdx == -1 {
+		nameColIdx = idColIdx + 1
+	}
+
+	expectedIDs := make(map[string]bool)
+	storeDisplay := make(map[string]string)
+
+	for _, row := range rows[1:] {
+		if len(row) <= idColIdx {
+			continue
+		}
+		sid := strings.TrimSpace(row[idColIdx])
+		if sid == "" || sid == "nan" {
+			continue
+		}
+
+		sname := ""
+		if len(row) > nameColIdx {
+			sname = strings.TrimSpace(row[nameColIdx])
+		}
+
+		sidLower := strings.ToLower(sid)
+		expectedIDs[sidLower] = true
+
+		if sname != "" {
+			storeDisplay[sid] = fmt.Sprintf("%s - %s", sid, sname)
+		} else {
+			storeDisplay[sid] = sid
+		}
+	}
+
+	// 💡 終極進化：只承認「真正有耗電 (degree > 0)」的數據！無視所有假心跳。
 	query := `
-		SELECT branch_name, device_name, COUNT(DISTINCT report_date) as reported_days, MAX(report_date)::text as last_report_date
-		FROM power_consumption_records 
-		WHERE report_date >= $1 AND report_date < $2
-		GROUP BY branch_name, device_name
-	`
-	rows, err := dbPool.Query(query, startTotal, endTotal)
+    WITH DeviceFirstSeen AS (
+        SELECT branch_code, device_mac, MAX(device_code_new) as device_code_new, MAX(branch_name) as branch_name, MAX(device_name) as device_name, MIN(report_date) as first_install_date
+        FROM power_consumption_records
+		WHERE degree > 0
+        GROUP BY branch_code, device_mac
+    ),
+    PeriodStats AS (
+        SELECT branch_code, device_mac, 
+               COUNT(DISTINCT report_date) as reported_days, 
+               MAX(report_date) as last_report_date
+        FROM power_consumption_records 
+        WHERE report_date >= $1 AND report_date < $2
+		  AND degree > 0
+        GROUP BY branch_code, device_mac
+    )
+    SELECT d.branch_code, d.branch_name, d.device_code_new, d.device_name, 
+           COALESCE(p.reported_days, 0) as reported_days, 
+           COALESCE(p.last_report_date::text, '區間內無資料') as last_report_date, 
+           d.first_install_date, d.device_mac
+    FROM DeviceFirstSeen d
+    LEFT JOIN PeriodStats p ON d.branch_code = p.branch_code AND d.device_mac = p.device_mac
+    `
+
+	fmt.Println("⏳ 正在比對數百萬筆資料，請稍候...")
+	dbRows, err := dbPool.Query(query, startTotal, endTotal)
 	if err != nil {
 		log.Fatalf("❌ 資料庫查詢失敗: %v", err)
 	}
-	defer rows.Close()
+	defer dbRows.Close()
 
-	actualIDs := make(map[string]bool)
-	var gapDevices []GapDevice
+	activeStores := make(map[string]bool)
+	var allGapDevices []GapDevice
 
-	for rows.Next() {
-		var branchName, deviceName, lastReport string
+	for dbRows.Next() {
+		var branchCode, branchName, deviceCode, deviceName, lastReport, deviceMac string
 		var reportedDays int
-		rows.Scan(&branchName, &deviceName, &reportedDays, &lastReport)
+		var firstInstall time.Time
 
-		// 嘗試將中文店名還原為 ID
-		realID := branchName
-		if mappedID, exists := nameToID[branchName]; exists {
-			realID = mappedID
+		dbRows.Scan(&branchCode, &branchName, &deviceCode, &deviceName, &reportedDays, &lastReport, &firstInstall, &deviceMac)
+
+		realIDLower := strings.ToLower(branchCode)
+
+		if reportedDays > 0 {
+			activeStores[realIDLower] = true
 		}
 
-		actualIDs[realID] = true
+		displayInfo := branchCode
+		if name, ok := storeDisplay[branchCode]; ok {
+			displayInfo = name
+		}
+
+		if len(lastReport) > 10 && lastReport != "區間內無資料" {
+			lastReport = lastReport[:10]
+		}
+		firstInstallStr := firstInstall.Format("2006-01-02")
+
+		tFirst, _ := time.Parse("2006-01-02", firstInstallStr)
+		dynamicStart := startDt
+		if tFirst.After(startDt) {
+			dynamicStart = tFirst
+		}
+
+		expectedDays := int(endDt.Sub(dynamicStart).Hours() / 24)
+		if expectedDays < 0 {
+			expectedDays = 0
+		}
+
 		missingDays := expectedDays - reportedDays
+		if missingDays < 0 {
+			missingDays = 0
+		}
 
-		if missingDays > 0 {
-			displayInfo := realID
-			if name, ok := storeMap[realID]; ok && name != "" {
-				displayInfo = fmt.Sprintf("%s - %s", realID, name)
+		// 計算距離期末 (endDt) 斷線了幾天
+		offlineDays := 0
+		if lastReport == "區間內無資料" {
+			offlineDays = expectedDays
+		} else {
+			tLast, _ := time.Parse("2006-01-02", lastReport)
+			offlineDays = int(endDt.Sub(tLast).Hours() / 24)
+			if offlineDays < 0 {
+				offlineDays = 0
 			}
-			
-			gapDevices = append(gapDevices, GapDevice{
-				BranchID:       realID,
-				BranchName:     displayInfo,
-				DeviceName:     deviceName,
-				ExpectedDays:   expectedDays,
-				ReportedDays:   reportedDays,
-				MissingDays:    missingDays,
-				LastReportDate: lastReport[:10],
-			})
+		}
+
+		gd := GapDevice{
+			BranchID:         branchCode,
+			BranchName:       displayInfo,
+			DeviceCode:       deviceCode,
+			DeviceName:       deviceName,
+			FirstInstallDate: firstInstallStr,
+			ExpectedDays:     expectedDays,
+			ReportedDays:     reportedDays,
+			MissingDays:      missingDays,
+			LastReportDate:   lastReport,
+			OfflineDays:      offlineDays,
+			DeviceMac:        deviceMac,
+		}
+
+		// 🔑 只抓取「期末斷線超過 7 天」的異常設備
+		if gd.OfflineDays > 7 {
+			allGapDevices = append(allGapDevices, gd)
 		}
 	}
 
-	// 找出完全消失的 ID
 	var missingIds []string
-	for expectedID := range storeMap {
-		if !actualIDs[expectedID] {
-			missingIds = append(missingIds, expectedID)
+	for expectedID := range expectedIDs {
+		if !activeStores[expectedID] {
+			for originalID := range storeDisplay {
+				if strings.ToLower(originalID) == expectedID {
+					missingIds = append(missingIds, originalID)
+					break
+				}
+			}
 		}
 	}
 
-	// 排序斷層設備 (缺漏天數降序)
-	sort.Slice(gapDevices, func(i, j int) bool {
-		if gapDevices[i].MissingDays == gapDevices[j].MissingDays {
-			return gapDevices[i].BranchID < gapDevices[j].BranchID
+	sort.Slice(allGapDevices, func(i, j int) bool {
+		if allGapDevices[i].OfflineDays == allGapDevices[j].OfflineDays {
+			return allGapDevices[i].BranchID < allGapDevices[j].BranchID
 		}
-		return gapDevices[i].MissingDays > gapDevices[j].MissingDays
+		return allGapDevices[i].OfflineDays > allGapDevices[j].OfflineDays
 	})
 
-	saveCheckLogToDB(startTotal, endTotal, expectedDays, missingIds, gapDevices, storeMap)
-
-	// --- 產出 Excel ---
-	f := excelize.NewFile()
-	
-	// Sheet 1: 設備資料斷層
-	sheet1 := "設備資料斷層"
-	f.SetSheetName("Sheet1", sheet1)
-	if len(gapDevices) > 0 {
-		headers := []string{"店家ID", "店家資訊", "設備名稱", "應有天數", "實際有資料天數", "缺漏天數", "最後收到資料日期"}
-		for i, h := range headers {
-			cell, _ := excelize.CoordinatesToCellName(i+1, 1)
-			f.SetCellValue(sheet1, cell, h)
-		}
-		for r, gd := range gapDevices {
-			f.SetCellValue(sheet1, fmt.Sprintf("A%d", r+2), gd.BranchID)
-			f.SetCellValue(sheet1, fmt.Sprintf("B%d", r+2), gd.BranchName)
-			f.SetCellValue(sheet1, fmt.Sprintf("C%d", r+2), gd.DeviceName)
-			f.SetCellValue(sheet1, fmt.Sprintf("D%d", r+2), gd.ExpectedDays)
-			f.SetCellValue(sheet1, fmt.Sprintf("E%d", r+2), gd.ReportedDays)
-			f.SetCellValue(sheet1, fmt.Sprintf("F%d", r+2), gd.MissingDays)
-			f.SetCellValue(sheet1, fmt.Sprintf("G%d", r+2), gd.LastReportDate)
-		}
-	} else {
-		f.SetCellValue(sheet1, "A1", "該期間內所有上線設備資料皆完整")
-	}
-
-	// Sheet 2: 完全無數據店家
-	sheet2 := "完全無數據店家"
-	f.NewSheet(sheet2)
-	if len(missingIds) > 0 {
-		f.SetCellValue(sheet2, "A1", "店家ID")
-		f.SetCellValue(sheet2, "B1", "店家資訊")
-		for r, mid := range missingIds {
-			f.SetCellValue(sheet2, fmt.Sprintf("A%d", r+2), mid)
-			info := mid
-			if name, ok := storeMap[mid]; ok && name != "" {
-				info = fmt.Sprintf("%s - %s", mid, name)
-			}
-			f.SetCellValue(sheet2, fmt.Sprintf("B%d", r+2), info)
-		}
-	} else {
-		f.SetCellValue(sheet2, "A1", "所有店家皆有資料")
-	}
+	sort.Strings(missingIds)
 
 	timestamp := time.Now().Format("20060102_150405")
-	reportName := fmt.Sprintf("數據空缺檢測報告_%s.xlsx", timestamp)
-
-	// 💡 新增：自動建立專屬的「檢測報告」資料夾
+	reportFilename := fmt.Sprintf("數據空缺檢測報告_%s.xlsx", timestamp)
 	reportDir := filepath.Join(exPath, "檢測報告")
-	if err := os.MkdirAll(reportDir, os.ModePerm); err != nil {
-		fmt.Printf("❌ 無法建立檢測報告資料夾: %v\n", err)
+	os.MkdirAll(reportDir, os.ModePerm)
+	reportPath := filepath.Join(reportDir, reportFilename)
+
+	outFile := excelize.NewFile()
+
+	outFile.SetSheetName("Sheet1", "現正斷線設備清單")
+	headers1 := []string{"店家ID", "店家資訊", "硬體MAC", "設備代碼", "設備名稱", "設備首次上線日", "應有天數", "實際有資料天數", "歷史缺漏天數", "最後收到資料日期", "❗距今斷線天數"}
+	for i, h := range headers1 {
+		colName, _ := excelize.ColumnNumberToName(i + 1)
+		outFile.SetCellValue("現正斷線設備清單", colName+"1", h)
 	}
 
-	// 組合完整的儲存路徑
-	reportPath := filepath.Join(reportDir, reportName)
+	for i, gd := range allGapDevices {
+		rowIdx := i + 2
+		outFile.SetCellValue("現正斷線設備清單", fmt.Sprintf("A%d", rowIdx), gd.BranchID)
+		outFile.SetCellValue("現正斷線設備清單", fmt.Sprintf("B%d", rowIdx), gd.BranchName)
+		outFile.SetCellValue("現正斷線設備清單", fmt.Sprintf("C%d", rowIdx), gd.DeviceMac)
+		outFile.SetCellValue("現正斷線設備清單", fmt.Sprintf("D%d", rowIdx), gd.DeviceCode)
+		outFile.SetCellValue("現正斷線設備清單", fmt.Sprintf("E%d", rowIdx), gd.DeviceName)
+		outFile.SetCellValue("現正斷線設備清單", fmt.Sprintf("F%d", rowIdx), gd.FirstInstallDate)
+		outFile.SetCellValue("現正斷線設備清單", fmt.Sprintf("G%d", rowIdx), gd.ExpectedDays)
+		outFile.SetCellValue("現正斷線設備清單", fmt.Sprintf("H%d", rowIdx), gd.ReportedDays)
+		outFile.SetCellValue("現正斷線設備清單", fmt.Sprintf("I%d", rowIdx), gd.MissingDays)
+		outFile.SetCellValue("現正斷線設備清單", fmt.Sprintf("J%d", rowIdx), gd.LastReportDate)
+		outFile.SetCellValue("現正斷線設備清單", fmt.Sprintf("K%d", rowIdx), gd.OfflineDays)
+	}
 
-	if err := f.SaveAs(reportPath); err != nil {
-		fmt.Printf("❌ 儲存 Excel 失敗: %v\n", err)
+	outFile.NewSheet("完全無數據店家")
+	headers2 := []string{"店家ID", "店家資訊"}
+	outFile.SetCellValue("完全無數據店家", "A1", headers2[0])
+	outFile.SetCellValue("完全無數據店家", "B1", headers2[1])
+
+	for i, mid := range missingIds {
+		rowIdx := i + 2
+		outFile.SetCellValue("完全無數據店家", fmt.Sprintf("A%d", rowIdx), mid)
+		display := storeDisplay[mid]
+		if display == "" {
+			display = mid
+		}
+		outFile.SetCellValue("完全無數據店家", fmt.Sprintf("B%d", rowIdx), display)
+	}
+
+	if err := outFile.SaveAs(reportPath); err != nil {
+		fmt.Printf("❌ 產出 Excel 報告時發生錯誤: %v\n", err)
 	}
 
 	fmt.Println("\n========================================")
-	fmt.Println("🎉 數據空缺檢測完成！")
+	fmt.Println("🎉 數據空缺檢測完成！(期末健康監控版)")
 	fmt.Printf("📊 發現 【%d】 家店完全無資料回傳。\n", len(missingIds))
-	fmt.Printf("📊 發現 【%d】 個設備發生資料斷層/缺漏。\n", len(gapDevices))
-	fmt.Printf("📁 詳細報告已收納至: %s\n", reportPath)
+	fmt.Printf("📊 發現 【%d】 個設備目前【斷線超過 7 天】。\n", len(allGapDevices))
 	fmt.Println("========================================")
 
-	// 自動修復機制
-	if autoFix == "auto_fix" {
-		fixSet := make(map[string]bool)
+	missingListStr := "無"
+	if len(missingIds) > 0 {
+		var dList []string
 		for _, mid := range missingIds {
-			fixSet[mid] = true
+			if d, ok := storeDisplay[mid]; ok {
+				dList = append(dList, d)
+			} else {
+				dList = append(dList, mid)
+			}
 		}
-		for _, gd := range gapDevices {
-			fixSet[gd.BranchID] = true
+		missingListStr = strings.Join(dList, ", ")
+	}
+
+	gapSummaryStr := "設備全數健康在線"
+	if len(allGapDevices) > 0 {
+		var gList []string
+		limit := 20
+		if len(allGapDevices) < 20 {
+			limit = len(allGapDevices)
 		}
-		
-		var fixList []string
-		for id := range fixSet {
-			fixList = append(fixList, id)
+		for i := 0; i < limit; i++ {
+			gList = append(gList, fmt.Sprintf("%s-%s(已斷線%d天)", allGapDevices[i].BranchName, allGapDevices[i].DeviceName, allGapDevices[i].OfflineDays))
+		}
+		gapSummaryStr = strings.Join(gList, ", ")
+		if len(allGapDevices) > 20 {
+			gapSummaryStr += fmt.Sprintf(" ...等共 %d 項設備異常", len(allGapDevices))
+		}
+	}
+
+	// 💡 呼叫更新版的方法：將 missingIds, gapDevices, storeDisplay 全數傳入以利建立 Tableau 映射表
+	saveCheckLogToDB(startTotal, endTotal, expectedTotalDays, missingIds, allGapDevices, missingListStr, gapSummaryStr, storeDisplay)
+
+	if autoFixFlag == "auto_fix" {
+		var branchesToFetch []string
+		branchesMap := make(map[string]bool)
+
+		for _, mid := range missingIds {
+			branchesMap[mid] = true
+		}
+		for _, gd := range allGapDevices {
+			branchesMap[gd.BranchID] = true
 		}
 
-		if len(fixList) > 0 {
-			performAutoFixZeroFill(startTotal, endTotal, fixList, storeMap)
+		for b := range branchesMap {
+			branchesToFetch = append(branchesToFetch, b)
+		}
+
+		if len(branchesToFetch) > 0 {
+			performAutoFix(startTotal, endTotal, branchesToFetch)
 		} else {
-			fmt.Println("\n✅ 檢測結果完美，無需啟動自動修復與補零！")
+			fmt.Println("\n✅ 檢測結果完美，全數設備健康在線，無需啟動自動修復與補零！")
 		}
 	}
 }

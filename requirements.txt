@@ -1,10 +1,21 @@
-pandas>=2.0.0
-requests>=2.31.0
-psycopg2-binary>=2.9.9
-tqdm>=4.66.1
-customtkinter>=5.2.2
-python-dotenv>=1.0.0
-selenium>=4.15.2
-undetected-chromedriver>=3.5.3
-beautifulsoup4>=4.12.2
-openpyxl>=3.1.2
+=== GUI 介面 ===
+
+customtkinter==5.2.2
+
+=== 爬蟲與網頁自動化 ===
+
+undetected-chromedriver3.5.3
+selenium4.15.2
+beautifulsoup44.12.2
+requests2.31.0
+
+=== 資料處理與進度條 ===
+
+pandas2.0.0
+openpyxl3.1.2
+tqdm==4.66.1
+
+=== 資料庫與環境變數 ===
+
+psycopg2-binary2.9.9
+python-dotenv1.0.0
