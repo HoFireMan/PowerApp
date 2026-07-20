@@ -73,7 +73,7 @@ func getDBConnection() *sql.DB {
 func saveCheckLogToDB(startStr, endStr string, expectedDays int, missingIds []string, gapDevices []GapDevice, missingListStr, gapSummaryStr string, storeDisplay map[string]string) {
 	fmt.Printf("\n🐳 系統：準備將本次檢測報告同步寫入資料庫...\n")
 
-	// 確保主表與關聯映射表都存在
+	// 確保主表與關聯映射表都存在，並且包含設備明細的 3 個新欄位！
 	createTableQuery := `
     CREATE TABLE IF NOT EXISTS sensor_data_quality_logs (
         id SERIAL PRIMARY KEY,
@@ -91,7 +91,10 @@ func saveCheckLogToDB(startStr, endStr string, expectedDays int, missingIds []st
 		log_id INTEGER,                         
 		branch_code VARCHAR(100),               
 		branch_name VARCHAR(255),               
-		issue_type VARCHAR(50)                  
+		issue_type VARCHAR(50),
+        device_name VARCHAR(255),
+        device_mac VARCHAR(100),
+        offline_days INTEGER
 	);
 	`
 	dbPool.Exec(createTableQuery)
@@ -112,29 +115,27 @@ func saveCheckLogToDB(startStr, endStr string, expectedDays int, missingIds []st
 		return
 	}
 
-	// 2. 將出事的店家逐筆寫入「映射表」供 Tableau 極速篩選
+	// 2. 將出事的店家「與設備」逐筆寫入「映射表」供 Tableau 極速且獨立篩選
 	insertMappingQuery := `
-		INSERT INTO sensor_data_quality_logs_mapping (log_id, branch_code, branch_name, issue_type)
-		VALUES ($1, $2, $3, $4)
+		INSERT INTO sensor_data_quality_logs_mapping (log_id, branch_code, branch_name, issue_type, device_name, device_mac, offline_days)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
 	`
 	mappingCount := 0
 
+	// 處理完全空缺的店家 (因為沒有特定設備，明細留空)
 	for _, mid := range missingIds {
 		display := storeDisplay[mid]
-		_, err := dbPool.Exec(insertMappingQuery, logID, mid, display, "完全空缺")
+		_, err := dbPool.Exec(insertMappingQuery, logID, mid, display, "完全空缺", "-", "-", expectedDays)
 		if err == nil {
 			mappingCount++
 		}
 	}
 
-	gapStoresHandled := make(map[string]bool)
+	// 處理設備斷層 (確保每台出事設備都獨立寫入一筆，不再打包！)
 	for _, gd := range gapDevices {
-		if !gapStoresHandled[gd.BranchID] {
-			_, err := dbPool.Exec(insertMappingQuery, logID, gd.BranchID, gd.BranchName, "設備斷層")
-			if err == nil {
-				mappingCount++
-				gapStoresHandled[gd.BranchID] = true
-			}
+		_, err := dbPool.Exec(insertMappingQuery, logID, gd.BranchID, gd.BranchName, "設備斷層", gd.DeviceName, gd.DeviceMac, gd.OfflineDays)
+		if err == nil {
+			mappingCount++
 		}
 	}
 
@@ -158,8 +159,8 @@ func performAutoFix(startStr, endStr string, missingBranches []string) {
 	if _, err := os.Stat(apiFetcherExe); err == nil {
 		branchesArg := strings.Join(missingBranches, ",")
 
-		// 💡 終極防漏優化：7 天一包、5 核心慢速精準補抓，杜絕 API 假性成功漏資料！
-		cmd := exec.Command(apiFetcherExe, startStr, endStr, "7", "5", branchesArg)
+		// 💡 終極防漏優化：3 天一包、5 核心慢速精準補抓，杜絕 API 假性成功漏資料！
+		cmd := exec.Command(apiFetcherExe, startStr, endStr, "3", "5", branchesArg)
 
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr

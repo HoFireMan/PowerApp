@@ -319,12 +319,12 @@ func fetchSegmentWithFallback(branchCode, startStr, endStr string, step int) (in
 	}
 
 	fallbackStep := step
-	if step > 30 {
-		fallbackStep = 30
+	if step > 5 {
+		fallbackStep = 5
 		fmt.Printf("  [重試] 店家 %s 時段 %s~%s 發生錯誤，改為 %d 天重試...\n", branchCode, startStr, endStr, fallbackStep)
-	} else if step > 7 {
-		fallbackStep = 7
-		fmt.Printf("  [重試] 店家 %s 時段 %s~%s 發生錯誤，改為 %d 天重試...\n", branchCode, startStr, endStr, fallbackStep)
+	} else if step > 1 {
+		fallbackStep = 1
+		fmt.Printf("  [重試] 店家 %s 時段 %s~%s 發生錯誤，改為 %d 天重試 (單日慢速)...\n", branchCode, startStr, endStr, fallbackStep)
 	} else {
 		fmt.Printf("  [放棄] 店家 %s 時段 %s~%s 已達最小重試天數仍失敗: %v\n", branchCode, startStr, endStr, err)
 		return 0, true
@@ -415,11 +415,11 @@ func main() {
 		}
 	} else {
 		reader := bufio.NewReader(os.Stdin)
-		fmt.Print("請輸入起始日期 (YYYY-MM-DD) [預設: 2020-05-20]: ")
+		fmt.Print("請輸入起始日期 (YYYY-MM-DD) [預設: 2020-01-01]: ")
 		inStart, _ := reader.ReadString('\n')
 		inStart = strings.TrimSpace(inStart)
 		if inStart == "" {
-			startTotal = "2020-05-20"
+			startTotal = "2020-01-01" // 💡 將預設的 2020-05-20 改為 2020-01-01
 		} else {
 			startTotal = inStart
 		}
@@ -433,7 +433,7 @@ func main() {
 			endTotal = inEnd
 		}
 
-		stepDays = 30
+		stepDays = 5 // 💡 預設改為 5 天，降低單次 API 負載，解決漏撈問題
 		maxWorkers = 10
 		targetBranchesArg = "ALL"
 	}

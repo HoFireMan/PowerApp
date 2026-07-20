@@ -55,8 +55,8 @@ class PowerApp(ctk.CTk):
         fs = ctk.CTkFrame(date_frame, fg_color="transparent")
         fs.grid(row=0, column=1, sticky="w")
         self.cb_start_y = ctk.CTkComboBox(fs, values=config.YEARS, width=70); self.cb_start_y.set("2020"); self.cb_start_y.pack(side="left", padx=2)
-        self.cb_start_m = ctk.CTkComboBox(fs, values=config.MONTHS, width=60); self.cb_start_m.set("05"); self.cb_start_m.pack(side="left", padx=2)
-        self.cb_start_d = ctk.CTkComboBox(fs, values=config.DAYS, width=60); self.cb_start_d.set("20"); self.cb_start_d.pack(side="left", padx=2)
+        self.cb_start_m = ctk.CTkComboBox(fs, values=config.MONTHS, width=60); self.cb_start_m.set("01"); self.cb_start_m.pack(side="left", padx=2) # 💡 將 05 改為 01
+        self.cb_start_d = ctk.CTkComboBox(fs, values=config.DAYS, width=60); self.cb_start_d.set("01"); self.cb_start_d.pack(side="left", padx=2) # 💡 將 20 改為 01
 
         ctk.CTkLabel(date_frame, text="結束日期:", text_color="#17a2b8", font=ctk.CTkFont(weight="bold")).grid(row=1, column=0, padx=5, pady=2, sticky="e")
         fe = ctk.CTkFrame(date_frame, fg_color="transparent")

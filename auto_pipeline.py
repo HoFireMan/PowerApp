@@ -66,7 +66,8 @@ def main():
     # --------------------------------------------------
     api_exe = os.path.join(config.API_SCRIPT_DIR, "api_fetcher.exe")
     if os.path.exists(api_exe):
-        cmd = [api_exe, start_str, end_str, "30", "10", "ALL"]
+        # 💡 將抓取區間縮小至 5 天，減輕對方伺服器壓力防漏
+        cmd = [api_exe, start_str, end_str, "5", "10", "ALL"]
         run_with_retry(cmd, config.API_SCRIPT_DIR, "步驟 1: 感測器 API 抓取")
     else:
         log(f"❌ [步驟 1 失敗] 找不到 {api_exe}")

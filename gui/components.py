@@ -22,7 +22,7 @@ class ApiFetchTab(ctk.CTkFrame):
         # --- UI 建構 ---
         ctk.CTkLabel(self, text="間隔天數:").grid(row=0, column=0, padx=5, pady=(5,2), sticky="e")
         self.entry_step_days = ctk.CTkEntry(self, width=200)
-        self.entry_step_days.insert(0, "30")
+        self.entry_step_days.insert(0, "5")
         self.entry_step_days.grid(row=0, column=1, padx=2, pady=(5,2), sticky="w")
 
         self.lbl_threads = ctk.CTkLabel(self, text="執行核心數:")
